@@ -18,6 +18,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "numpy",
+    "requests",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

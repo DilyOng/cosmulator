@@ -16,6 +16,7 @@ from cosmulator.diagnostics import (
     moment_error,
     self_consistency,
 )
+from cosmulator.fetch import EmulatorArchive, fetch
 from cosmulator.manifest import (
     Hyperparameters,
     Manifest,
@@ -28,6 +29,7 @@ from cosmulator.store import Emulator, EmulatorStore
 __all__ = [
     "__version__",
     "Emulator",
+    "EmulatorArchive",
     "EmulatorStore",
     "Hyperparameters",
     "Manifest",
@@ -35,6 +37,7 @@ __all__ = [
     "Quality",
     "Training",
     "effective_sample_size",
+    "fetch",
     "moment_error",
     "self_consistency",
 ]
