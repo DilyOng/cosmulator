@@ -16,10 +16,9 @@ license-files = ["LICENSE"]
 # requires Python >=3.12. Declaring anything lower produces an install that
 # imports but cannot train.
 requires-python = ">=3.12"
-# Deliberately empty while the package is a skeleton.
-# tests/test_packaging.py fails if a dependency is declared before any
-# module imports it, which is how metadata drifts out of step with code.
-dependencies = []
+dependencies = [
+    "numpy",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
