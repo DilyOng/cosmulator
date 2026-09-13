@@ -10,4 +10,31 @@ training one is not: the training stack is an optional extra, and nothing in the
 core import path requires it.
 """
 
-from cosmulator._version import __version__  # noqa: F401
+from cosmulator._version import __version__
+from cosmulator.diagnostics import (
+    effective_sample_size,
+    moment_error,
+    self_consistency,
+)
+from cosmulator.manifest import (
+    Hyperparameters,
+    Manifest,
+    Provenance,
+    Quality,
+    Training,
+)
+from cosmulator.store import Emulator, EmulatorStore
+
+__all__ = [
+    "__version__",
+    "Emulator",
+    "EmulatorStore",
+    "Hyperparameters",
+    "Manifest",
+    "Provenance",
+    "Quality",
+    "Training",
+    "effective_sample_size",
+    "moment_error",
+    "self_consistency",
+]
