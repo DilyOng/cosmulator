@@ -1,0 +1,40 @@
+name: Unit tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 0 * * *"
+
+jobs:
+  pip:
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every failing version, not just the first.
+      fail-fast: false
+      matrix:
+        # Every version pyproject.toml claims to support. Testing a single
+        # version is how a requires-python floor drifts out of step with what
+        # the code actually needs.
+        python-version: ['3.12', '3.13']
+    name: pip (${{ matrix.python-version }})
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+      - name: Install
+        run: pip install -e ".[test]"
+      # No credentials are set here. Nothing in the package or the suite reads a
+      # token from the environment; injecting one only creates a way for it to
+      # be captured into a test recording.
+      - name: Test with pytest
+        run: pytest --cov=cosmulator tests
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}

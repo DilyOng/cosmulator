@@ -1,0 +1,59 @@
+name: Code style
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 0 * * *"
+
+# Every job below names `cosmulator` explicitly. Pointing a linter at a
+# directory that does not exist makes it match no files and exit 0, so the job
+# stays green while reporting nothing.
+jobs:
+  black:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install black
+      - run: black --check cosmulator tests
+
+  isort:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install isort
+      - run: isort --check-only cosmulator tests
+
+  flake8:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install flake8
+      # Settings live in .flake8 so the command documented in CONTRIBUTING
+      # works unmodified.
+      - run: flake8 cosmulator tests
+
+  pydocstyle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install pydocstyle
+      - run: pydocstyle --convention=numpy cosmulator

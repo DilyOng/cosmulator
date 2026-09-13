@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cosmulator"
+dynamic = ["version"]
+authors = [
+    { name = "Dily Duan Yi Ong", email = "dlo26@cam.ac.uk" },
+]
+description = "Train, validate and serve machine-learning emulators of posterior distributions"
+readme = "README.rst"
+license = "MIT"
+license-files = ["LICENSE"]
+# Set by flax: margarine needs flax>=0.12 for flax.nnx.data, and flax 0.12
+# requires Python >=3.12. Declaring anything lower produces an install that
+# imports but cannot train.
+requires-python = ">=3.12"
+# Deliberately empty while the package is a skeleton.
+# tests/test_packaging.py fails if a dependency is declared before any
+# module imports it, which is how metadata drifts out of step with code.
+dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/DilyOng/cosmulator"
+"Bug Tracker" = "https://github.com/DilyOng/cosmulator/issues"
+"Documentation" = "https://cosmulator.readthedocs.io"
+
+[project.optional-dependencies]
+# The training stack is deliberately optional. Importing cosmulator, inspecting
+# stored emulators and running the test suite must not require JAX, so that a
+# reviewer or a laptop user can install and exercise the package cheaply.
+train = ["margarine", "jax", "flax>=0.12", "optax"]
+docs = ["sphinx", "sphinx_rtd_theme", "numpydoc"]
+test = ["pytest", "pytest-cov", "flake8", "pydocstyle", "packaging", "pre-commit"]
+
+[tool.setuptools.packages.find]
+include = ["cosmulator*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cosmulator._version.__version__" }
+
+[tool.isort]
+profile = "black"
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: requires the optional training stack and a GPU",
+]
