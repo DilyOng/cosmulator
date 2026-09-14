@@ -13,6 +13,7 @@ core import path requires it.
 from cosmulator._version import __version__
 from cosmulator.diagnostics import (
     effective_sample_size,
+    forward_kl,
     moment_error,
     self_consistency,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "Training",
     "effective_sample_size",
     "fetch",
+    "forward_kl",
     "moment_error",
     "self_consistency",
 ]

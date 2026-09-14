@@ -104,6 +104,93 @@ def self_consistency(log_prob_at_target, log_prob_at_emulated, weights=None):
     }
 
 
+def forward_kl(log_prob_at_target, target_samples, weights=None):
+    r"""Forward Kullback--Leibler divergence from the target to the emulator.
+
+    For a target posterior :math:`P` and an emulator :math:`q`,
+
+    .. math::
+        D_{\mathrm{KL}}(P\,\|\,q) = -H(P) - E_P[\log q]
+                                  = H(P, q) - H(P),
+
+    reported in nats. Unlike :func:`self_consistency`, this is a genuine
+    divergence: it is non-negative, zero only when the emulator equals the
+    target, and it *cannot* be made small by over-dispersion. That makes it the
+    metric to minimise when tuning an emulator; the signed self-consistency
+    :math:`\Delta\log p` can be driven towards zero by an over-broad flow, and
+    so rewards the very failure it is meant to catch.
+
+    The cross-entropy :math:`H(P, q) = -E_P[\log q]` is computed exactly from
+    the flow's own density at the target samples. The entropy :math:`H(P)` is
+    not available for a nuisance-marginalised posterior, so it is estimated by
+    the Gaussian entropy of the target's covariance,
+    :math:`\tfrac12\ln[(2\pi e)^d \det\Sigma]`. Because a Gaussian has the
+    largest entropy of any distribution with a given covariance, this
+    *overestimates* :math:`H(P)`, and the returned divergence is therefore a
+    strict **lower bound** on the true forward KL --- tight when the target is
+    close to Gaussian, as marginal cosmological posteriors usually are.
+
+    Parameters
+    ----------
+    log_prob_at_target : array_like, shape (n,)
+        The emulator's log density evaluated at the ``n`` target samples.
+    target_samples : array_like, shape (n, d)
+        The target samples themselves, used for the covariance in :math:`H(P)`.
+    weights : array_like, optional
+        Weights for the target samples. Nested sampling output is weighted, and
+        ignoring that biases both the cross-entropy and the covariance.
+
+    Returns
+    -------
+    dict
+        ``forward_kl`` (the lower bound, in nats), and the ``cross_entropy`` and
+        ``entropy_gaussian`` terms that formed it, so a value can be diagnosed
+        without recomputing.
+
+    Raises
+    ------
+    ValueError
+        If the densities and samples disagree in length, or the target
+        covariance is not positive definite.
+
+    Notes
+    -----
+    Non-finite densities are **penalised, not dropped**. A ``-inf`` at a target
+    sample means the emulator assigns essentially zero probability where the
+    target has mass --- a missed mode --- which forward KL should punish
+    heavily. Discarding those points, as :func:`self_consistency` legitimately
+    does for its symmetric quantity, would here flatter a mode-collapsed flow
+    that fits one region and ignores the rest.
+    """
+    at_target = np.asarray(log_prob_at_target, dtype=float)
+    samples = np.atleast_2d(np.asarray(target_samples, dtype=float))
+    n, d = samples.shape
+    if at_target.shape != (n,):
+        raise ValueError(
+            f"log densities have shape {at_target.shape}, expected ({n},) "
+            f"to match the target samples"
+        )
+
+    w = _normalised_weights(weights, n)
+    # Penalise, rather than drop, missed mass so mode collapse is not rewarded.
+    penalised = np.where(np.isfinite(at_target), at_target, -1e6)
+    cross_entropy = -float(np.sum(w * penalised))
+
+    mean = w @ samples
+    centred = samples - mean
+    cov = (centred * w[:, None]).T @ centred
+    sign, logdet = np.linalg.slogdet(cov)
+    if sign <= 0:
+        raise ValueError("target covariance is not positive definite")
+    entropy_gaussian = 0.5 * (d * (1.0 + np.log(2.0 * np.pi)) + logdet)
+
+    return {
+        "forward_kl": float(cross_entropy - entropy_gaussian),
+        "cross_entropy": float(cross_entropy),
+        "entropy_gaussian": float(entropy_gaussian),
+    }
+
+
 def moment_error(target_samples, emulated_samples, weights=None):
     """Compare the first two moments of the target and the emulator.
 

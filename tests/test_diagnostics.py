@@ -9,6 +9,7 @@ import pytest
 
 from cosmulator.diagnostics import (
     effective_sample_size,
+    forward_kl,
     moment_error,
     self_consistency,
 )
@@ -65,6 +66,69 @@ class TestSelfConsistency:
         result = self_consistency(np.full(10, -2.0), np.full(10, -3.0))
         assert result["E_P_logq"] == pytest.approx(-2.0)
         assert result["E_q_logq"] == pytest.approx(-3.0)
+
+
+class TestForwardKL:
+    """D_KL(P||q): a proper divergence that over-dispersion cannot flatter."""
+
+    @staticmethod
+    def _gaussian_logpdf(x, scale=1.0):
+        """Log density of an isotropic zero-mean Gaussian at ``x``."""
+        d = x.shape[1]
+        return -0.5 * np.sum(x ** 2, axis=1) / scale ** 2 - 0.5 * d * np.log(
+            2.0 * np.pi * scale ** 2
+        )
+
+    def test_perfect_emulator_is_near_zero(self):
+        """A flow equal to the target has zero divergence up to sampling noise."""
+        rng = np.random.default_rng(0)
+        x = rng.normal(size=(20000, 3))
+        result = forward_kl(self._gaussian_logpdf(x), x)
+        assert result["forward_kl"] == pytest.approx(0.0, abs=0.05)
+
+    def test_over_dispersion_is_positive(self):
+        """Where self-consistency goes negative, forward KL stays positive.
+
+        This is the whole point: over-dispersion is a real error, and a proper
+        divergence must report it as such rather than be lowered by it.
+        """
+        rng = np.random.default_rng(1)
+        x = rng.normal(size=(50000, 2))
+        over_broad = self._gaussian_logpdf(x, scale=1.5)
+        assert forward_kl(over_broad, x)["forward_kl"] > 0
+
+    def test_matches_the_gaussian_analytic_value(self):
+        """For known Gaussians the answer is checked against the closed form.
+
+        D_KL(N(0,I) || N(0,s^2 I)) = d/2 (1/s^2 - 1) + d ln s.
+        """
+        rng = np.random.default_rng(2)
+        d, s = 2, 1.5
+        x = rng.normal(size=(100000, d))
+        analytic = 0.5 * d * (1.0 / s ** 2 - 1.0) + d * np.log(s)
+        result = forward_kl(self._gaussian_logpdf(x, scale=s), x)
+        assert result["forward_kl"] == pytest.approx(analytic, abs=0.02)
+
+    def test_missing_mass_is_penalised_not_dropped(self):
+        """A flow that assigns zero density to real posterior mass scores worse.
+
+        Dropping the -inf points, as the symmetric self-consistency does, would
+        reward a mode-collapsed flow; here it must be penalised instead.
+        """
+        rng = np.random.default_rng(3)
+        x = rng.normal(size=(1000, 2))
+        logq = self._gaussian_logpdf(x)
+        good = forward_kl(logq, x)["forward_kl"]
+        collapsed = logq.copy()
+        collapsed[:100] = -np.inf  # emulator misses 10% of the mass
+        bad = forward_kl(collapsed, x)["forward_kl"]
+        assert np.isfinite(bad)
+        assert bad > good + 100
+
+    def test_length_mismatch_is_reported(self):
+        """Densities and samples must describe the same points."""
+        with pytest.raises(ValueError, match="expected"):
+            forward_kl(np.zeros(5), np.zeros((10, 2)))
 
 
 class TestMomentError:
