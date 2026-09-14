@@ -126,9 +126,13 @@ def forward_kl(log_prob_at_target, target_samples, weights=None):
     the Gaussian entropy of the target's covariance,
     :math:`\tfrac12\ln[(2\pi e)^d \det\Sigma]`. Because a Gaussian has the
     largest entropy of any distribution with a given covariance, this
-    *overestimates* :math:`H(P)`, and the returned divergence is therefore a
-    strict **lower bound** on the true forward KL --- tight when the target is
-    close to Gaussian, as marginal cosmological posteriors usually are.
+    *overestimates* :math:`H(P)`, so **when the emulator has finite density at
+    every target sample** the returned value is a **lower bound** on the true
+    forward KL --- tight when the target is close to Gaussian, as marginal
+    cosmological posteriors usually are. Where the emulator misses posterior
+    mass the true divergence is infinite; those points are penalised with a
+    large finite value (see Notes), so the result is then a large finite proxy
+    that flags the failure rather than a strict bound.
 
     Parameters
     ----------
@@ -160,7 +164,9 @@ def forward_kl(log_prob_at_target, target_samples, weights=None):
     target has mass --- a missed mode --- which forward KL should punish
     heavily. Discarding those points, as :func:`self_consistency` legitimately
     does for its symmetric quantity, would here flatter a mode-collapsed flow
-    that fits one region and ignores the rest.
+    that fits one region and ignores the rest. The true divergence in that case
+    is infinite; the finite penalty keeps the result usable as an optimisation
+    target while still reporting the flow as badly wrong.
     """
     at_target = np.asarray(log_prob_at_target, dtype=float)
     samples = np.atleast_2d(np.asarray(target_samples, dtype=float))
