@@ -109,21 +109,31 @@ class TestForwardKL:
         result = forward_kl(self._gaussian_logpdf(x, scale=s), x)
         assert result["forward_kl"] == pytest.approx(analytic, abs=0.02)
 
-    def test_missing_mass_is_penalised_not_dropped(self):
-        """A flow that assigns zero density to real posterior mass scores worse.
+    def test_missing_mass_is_floored_penalised_and_reported(self):
+        """Underflowed density is floored (bounded), penalised, and reported.
 
-        Dropping the -inf points, as the symmetric self-consistency does, would
-        reward a mode-collapsed flow; here it must be penalised instead.
+        A ``-inf`` from an infinite-support flow is tail underflow, not a true
+        zero, so it must not receive an unphysical huge penalty that swamps the
+        score. But it must still raise the divergence, and the affected weight
+        must be reported via ``missed_mass_frac`` so genuine mode collapse is
+        never hidden.
         """
         rng = np.random.default_rng(3)
         x = rng.normal(size=(1000, 2))
         logq = self._gaussian_logpdf(x)
-        good = forward_kl(logq, x)["forward_kl"]
+        good = forward_kl(logq, x)
         collapsed = logq.copy()
-        collapsed[:100] = -np.inf  # emulator misses 10% of the mass
-        bad = forward_kl(collapsed, x)["forward_kl"]
-        assert np.isfinite(bad)
-        assert bad > good + 100
+        collapsed[:100] = -np.inf  # 10% of (uniform-weight) mass underflows
+        bad = forward_kl(collapsed, x)
+        assert np.isfinite(bad["forward_kl"])
+        assert bad["forward_kl"] > good["forward_kl"]        # penalised, monotone
+        assert bad["missed_mass_frac"] == pytest.approx(0.1, abs=1e-9)
+        assert good["missed_mass_frac"] == 0.0
+
+    def test_all_underflow_target_raises(self):
+        """If no target sample has finite density there is nothing to floor to."""
+        with pytest.raises(ValueError, match="finite"):
+            forward_kl(np.full(4, -np.inf), np.zeros((4, 2)))
 
     def test_length_mismatch_is_reported(self):
         """Densities and samples must describe the same points."""

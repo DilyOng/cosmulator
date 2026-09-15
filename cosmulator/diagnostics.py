@@ -129,10 +129,10 @@ def forward_kl(log_prob_at_target, target_samples, weights=None):
     *overestimates* :math:`H(P)`, so **when the emulator has finite density at
     every target sample** the returned value is a **lower bound** on the true
     forward KL --- tight when the target is close to Gaussian, as marginal
-    cosmological posteriors usually are. Where the emulator misses posterior
-    mass the true divergence is infinite; those points are penalised with a
-    large finite value (see Notes), so the result is then a large finite proxy
-    that flags the failure rather than a strict bound.
+    cosmological posteriors usually are. Where the emulator's density underflows
+    at some target samples those points are floored (see Notes) rather than
+    dropped, and the fraction of target weight affected is returned as
+    ``missed_mass_frac`` so the failure is visible without distorting the score.
 
     Parameters
     ----------
@@ -147,26 +147,33 @@ def forward_kl(log_prob_at_target, target_samples, weights=None):
     Returns
     -------
     dict
-        ``forward_kl`` (the lower bound, in nats), and the ``cross_entropy`` and
-        ``entropy_gaussian`` terms that formed it, so a value can be diagnosed
-        without recomputing.
+        ``forward_kl`` (the lower bound, in nats), the ``cross_entropy`` and
+        ``entropy_gaussian`` terms that formed it, and ``missed_mass_frac`` --
+        the fraction of target weight at which the emulator's density
+        underflowed -- so a value can be diagnosed without recomputing.
 
     Raises
     ------
     ValueError
-        If the densities and samples disagree in length, or the target
-        covariance is not positive definite.
+        If the densities and samples disagree in length, the target covariance
+        is not positive definite, or no target sample has finite density.
 
     Notes
     -----
-    Non-finite densities are **penalised, not dropped**. A ``-inf`` at a target
-    sample means the emulator assigns essentially zero probability where the
-    target has mass --- a missed mode --- which forward KL should punish
-    heavily. Discarding those points, as :func:`self_consistency` legitimately
-    does for its symmetric quantity, would here flatter a mode-collapsed flow
-    that fits one region and ignores the rest. The true divergence in that case
-    is infinite; the finite penalty keeps the result usable as an optimisation
-    target while still reporting the flow as badly wrong.
+    Non-finite densities are **floored, not dropped, and not given an unphysical
+    penalty**. A normalising flow with a Gaussian base has infinite support and
+    never assigns true-zero density, so a ``-inf`` at a target sample is
+    numerical underflow in the far tail, not a genuinely missed mode. Dropping
+    such points, as :func:`self_consistency` does for its symmetric quantity,
+    would flatter a mode-collapsed flow; but assigning a huge fixed penalty
+    (e.g. ``-1e6``) is equally wrong -- a fraction of a percent of tail weight
+    then contributes hundreds of nats and swamps the real signal, leaving the
+    score flat and useless for optimisation. Instead each underflowed density is
+    floored at the least-likely *finite* log density in the batch. That is
+    bounded, so a benign tail underflow (tiny weight) is negligible, while a
+    genuinely missed mode (high weight underflowing) is still penalised in
+    proportion to its weight -- and ``missed_mass_frac`` reports the fraction
+    regardless, so mode collapse is never hidden.
     """
     at_target = np.asarray(log_prob_at_target, dtype=float)
     samples = np.atleast_2d(np.asarray(target_samples, dtype=float))
@@ -178,9 +185,20 @@ def forward_kl(log_prob_at_target, target_samples, weights=None):
         )
 
     w = _normalised_weights(weights, n)
-    # Penalise, rather than drop, missed mass so mode collapse is not rewarded.
-    penalised = np.where(np.isfinite(at_target), at_target, -1e6)
-    cross_entropy = -float(np.sum(w * penalised))
+    # Floor, rather than drop, a non-finite log density, so a genuinely missed mode
+    # is still penalised in proportion to its weight, but a flow with infinite
+    # support (whose -inf is mere numerical underflow in the far tail) is not
+    # assigned an unphysical, signal-swamping penalty. The floor is the least-likely
+    # *finite* density the emulator can evaluate here; a benign tail underflow then
+    # carries negligible weight, while a high-weight miss carries a large one. The
+    # fraction of target weight that underflowed is returned as ``missed_mass_frac``.
+    finite = np.isfinite(at_target)
+    if not finite.any():
+        raise ValueError("no finite log densities at the target samples")
+    floor = float(at_target[finite].min())
+    floored = np.where(finite, at_target, floor)
+    missed_mass = float(w[~finite].sum())
+    cross_entropy = -float(np.sum(w * floored))
 
     mean = w @ samples
     centred = samples - mean
@@ -194,6 +212,7 @@ def forward_kl(log_prob_at_target, target_samples, weights=None):
         "forward_kl": float(cross_entropy - entropy_gaussian),
         "cross_entropy": float(cross_entropy),
         "entropy_gaussian": float(entropy_gaussian),
+        "missed_mass_frac": missed_mass,
     }
 
 
