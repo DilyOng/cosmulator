@@ -25,10 +25,18 @@ from cosmulator.manifest import (
     Quality,
     Training,
 )
+from cosmulator.parameters import (
+    BASE,
+    COSMO_SAMPLED,
+    cosmological_parameters,
+    parameter_names,
+)
 from cosmulator.store import Emulator, EmulatorStore
 
 __all__ = [
     "__version__",
+    "BASE",
+    "COSMO_SAMPLED",
     "Emulator",
     "EmulatorArchive",
     "EmulatorStore",
@@ -37,9 +45,11 @@ __all__ = [
     "Provenance",
     "Quality",
     "Training",
+    "cosmological_parameters",
     "effective_sample_size",
     "fetch",
     "forward_kl",
     "moment_error",
+    "parameter_names",
     "self_consistency",
 ]
