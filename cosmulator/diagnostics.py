@@ -169,11 +169,16 @@ def forward_kl(log_prob_at_target, target_samples, weights=None):
     (e.g. ``-1e6``) is equally wrong -- a fraction of a percent of tail weight
     then contributes hundreds of nats and swamps the real signal, leaving the
     score flat and useless for optimisation. Instead each underflowed density is
-    floored at the least-likely *finite* log density in the batch. That is
-    bounded, so a benign tail underflow (tiny weight) is negligible, while a
-    genuinely missed mode (high weight underflowing) is still penalised in
-    proportion to its weight -- and ``missed_mass_frac`` reports the fraction
-    regardless, so mode collapse is never hidden.
+    floored 50 nats below the *median* finite log density. The median tracks the
+    bulk scale (so the floor adapts to dimension) and, unlike the raw minimum, is
+    immune to numerical-outlier finite values -- a flow on a degenerate posterior
+    can return finite garbage such as ``-1e33`` at an outlier, and flooring at the
+    minimum would adopt it and inflate the divergence to ``~1e30``. Any such
+    absurd finite value is clipped to the floor as well. The floor is bounded, so
+    a benign tail underflow (tiny weight) is negligible, while a genuinely missed
+    mode (high weight underflowing) is still penalised in proportion to its
+    weight -- and ``missed_mass_frac`` reports the fraction regardless, so mode
+    collapse is never hidden.
     """
     at_target = np.asarray(log_prob_at_target, dtype=float)
     samples = np.atleast_2d(np.asarray(target_samples, dtype=float))
@@ -195,8 +200,14 @@ def forward_kl(log_prob_at_target, target_samples, weights=None):
     finite = np.isfinite(at_target)
     if not finite.any():
         raise ValueError("no finite log densities at the target samples")
-    floor = float(at_target[finite].min())
-    floored = np.where(finite, at_target, floor)
+    # Floor 50 nats below the MEDIAN finite log density. The median tracks the bulk
+    # density scale (so the floor adapts to dimension) and, unlike the raw minimum,
+    # is immune to numerical-outlier finite values -- a flow on a degenerate
+    # posterior can return finite garbage (e.g. -1e33) at an outlier, and flooring
+    # at the minimum would adopt it and blow the divergence up to ~1e30. Clip both
+    # non-finite densities and any absurdly-negative finite value to this floor.
+    floor = float(np.median(at_target[finite]) - 50.0)
+    floored = np.where(finite & (at_target > floor), at_target, floor)
     missed_mass = float(w[~finite].sum())
     cross_entropy = -float(np.sum(w * floored))
 

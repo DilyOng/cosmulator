@@ -62,6 +62,7 @@ def train_emulator(
     epochs=2000,
     patience=100,
     batch_size=1024,
+    mass_fraction=0.9999,
     seed=0,
 ):
     """Train a RealNVP emulator on the weighted cosmological posterior of a chain.
@@ -87,6 +88,13 @@ def train_emulator(
         Early-stopping patience, in epochs, on the validation loss.
     batch_size : int
         Minibatch size, capped at the number of samples.
+    mass_fraction : float
+        Keep the highest-weight samples that together carry this fraction of the
+        posterior mass, dropping the negligible-weight tail. Nested-sampling output
+        includes extreme low-weight prior-phase points; kept in, they set
+        margarine's gaussianisation range and drive the loss to NaN (the JAX
+        RealNVP, unlike the TF MAF, does not mask tiny weights). Default keeps
+        99.99% of the mass. Pass ``1.0`` to keep every sample.
     seed : int
         Seed for the JAX PRNG (data split and initialisation).
 
@@ -113,8 +121,15 @@ def train_emulator(
     theta = np.asarray(samples[parameters].to_numpy(), dtype=np.float64)
     weights = _weights_of(samples, len(theta))
 
-    # Weighted training on ALL samples -- no equal-weight resampling. margarine
-    # renormalises the weights internally and minimises -sum_j w_j log q(theta_j).
+    # Weighted training -- no equal-weight resampling -- but on the mass-carrying
+    # samples only: drop the negligible-weight tail (see mass_fraction) so extreme
+    # prior-phase outliers do not break the gaussianisation. margarine renormalises
+    # the kept weights internally and minimises -sum_j w_j log q(theta_j).
+    if mass_fraction < 1.0:
+        order = np.argsort(weights)[::-1]
+        cutoff = int(np.searchsorted(np.cumsum(weights[order]), mass_fraction)) + 1
+        keep = np.sort(order[:cutoff])
+        theta, weights = theta[keep], weights[keep]
     theta_j = jax.numpy.asarray(theta)
     weights_j = jax.numpy.asarray(weights)
 

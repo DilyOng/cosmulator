@@ -135,6 +135,23 @@ class TestForwardKL:
         with pytest.raises(ValueError, match="finite"):
             forward_kl(np.full(4, -np.inf), np.zeros((4, 2)))
 
+    def test_finite_garbage_outlier_does_not_blow_up(self):
+        """A single absurdly-negative FINITE log density must not dominate.
+
+        A flow on a degenerate posterior can return finite garbage (e.g. -1e33)
+        at an outlier. Flooring at the raw minimum would adopt that value and
+        send the divergence to ~1e30; the robust median-based floor must clip it.
+        """
+        rng = np.random.default_rng(5)
+        x = rng.normal(size=(1000, 2))
+        logq = self._gaussian_logpdf(x)
+        clean = forward_kl(logq, x)["forward_kl"]
+        poisoned = logq.copy()
+        poisoned[0] = -1e33  # finite numerical garbage at one outlier
+        result = forward_kl(poisoned, x)["forward_kl"]
+        assert np.isfinite(result)
+        assert result < clean + 1.0  # one clipped point barely moves the score
+
     def test_length_mismatch_is_reported(self):
         """Densities and samples must describe the same points."""
         with pytest.raises(ValueError, match="expected"):
