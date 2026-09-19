@@ -42,7 +42,7 @@ classifiers = [
 # The training stack is deliberately optional. Importing cosmulator, inspecting
 # stored emulators and running the test suite must not require JAX, so that a
 # reviewer or a laptop user can install and exercise the package cheaply.
-train = ["margarine", "jax", "flax>=0.12", "optax"]
+train = ["jax", "optax", "flowjax", "equinox", "flax>=0.12", "margarine"]
 docs = ["sphinx", "sphinx_rtd_theme", "numpydoc"]
 test = ["pytest", "pytest-cov", "flake8", "pydocstyle", "packaging", "pre-commit"]
 
