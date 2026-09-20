@@ -1,16 +1,17 @@
-==========================================================================
-cosmulator: emulators of expensive posterior distributions
-==========================================================================
+=============================================================================================
+cosmulator: accelerating cosmological inference with JAX machine-learning emulators on GPU
+=============================================================================================
 
 :Author: Dily Duan Yi Ong
 :License: MIT
 :Homepage: https://github.com/DilyOng/cosmulator
 
 Nested sampling produces cosmological posteriors at great expense — thousands
-of CPU hours per model–dataset run. ``cosmulator`` learns a normalising flow
-from those samples so the posterior can be resampled instantly, and manages
-the resulting emulators — training, validation, storage and serving — across a
-grid of runs.
+of CPU hours per model–survey run. ``cosmulator`` trains JAX normalising-flow
+emulators of those posteriors on GPU, so a distribution can be resampled
+instantly for fast marginalisation and Bayesian evidence, and manages the
+resulting emulators — training, validation, storage and serving — across a grid
+of cosmological models and surveys.
 
 Developed under a UKRI-funded high performance computing (DiRAC) project.
 
