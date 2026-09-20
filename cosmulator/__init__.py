@@ -31,7 +31,6 @@ from cosmulator.parameters import (
     cosmological_parameters,
     parameter_names,
 )
-from cosmulator.recalibrate import recalibrate
 from cosmulator.store import Emulator, EmulatorStore
 
 __all__ = [
@@ -52,6 +51,5 @@ __all__ = [
     "forward_kl",
     "moment_error",
     "parameter_names",
-    "recalibrate",
     "self_consistency",
 ]
