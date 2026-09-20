@@ -12,7 +12,7 @@ from those samples so the posterior can be resampled instantly, and manages
 the resulting emulators — training, validation, storage and serving — across a
 grid of runs.
 
-Developed under a DiRAC allocation.
+Developed under a UKRI-funded high performance computing (DiRAC) project.
 
 Installation
 ------------
