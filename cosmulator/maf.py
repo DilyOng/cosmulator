@@ -60,7 +60,7 @@ def train_maf_emulator(
     mass_fraction=0.9999,
     spline=False,
     seed=0,
-    train_loss="batch",
+    train_loss="global",
     report=None,
 ):
     """Train a MAF (or spline-MAF) emulator on a weighted cosmological posterior.
@@ -93,16 +93,18 @@ def train_maf_emulator(
         of affine ones. Marginally sharper, at more parameters.
     seed : int
         Seed for the JAX PRNG.
-    train_loss : {"batch", "global"}
-        How the minibatch training loss normalises the weights. ``"batch"`` (the
-        original recipe) divides by the per-batch weight sum, i.e. a self-normalised
-        weighted mean over the batch; simple, but a biased minibatch estimator of
-        the full objective because the denominator is random from batch to batch,
-        so a low-mass batch is re-inflated to the same influence as a high-mass one.
-        ``"global"`` divides instead by a constant (the global training-weight sum,
-        scaled by ``n_train / batch_size``), which is the unbiased estimator of the
-        full weighted objective. The validation NLL is always the exact weighted
-        mean over the whole held-out set and is unaffected by this choice.
+    train_loss : {"global", "batch"}
+        How the minibatch training loss normalises the weights. ``"global"`` (the
+        default) divides by a constant (the global training-weight sum, scaled by
+        ``n_train / batch_size``), the unbiased minibatch estimator of the full
+        weighted objective. ``"batch"`` (the original recipe) divides by the
+        per-batch weight sum, i.e. a self-normalised weighted mean over the batch;
+        simple, but a biased estimator because the denominator is random from batch
+        to batch, so a low-mass batch is re-inflated to the same influence as a
+        high-mass one. On the lcdm/planck chain ``"global"`` measured slightly
+        tighter (0.88% vs 1.04% marginal width), so it is preferred; ``"batch"`` is
+        kept for reproducing earlier results. The validation NLL is always the exact
+        weighted mean over the whole held-out set and is unaffected by this choice.
     report : callable, optional
         A ``report(epoch, val_nll)`` callback invoked after each epoch with the
         held-out weighted NLL. Used to stream progress to a hyperparameter
