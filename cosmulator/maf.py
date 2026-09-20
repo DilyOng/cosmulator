@@ -60,6 +60,7 @@ def train_maf_emulator(
     mass_fraction=0.9999,
     spline=False,
     seed=0,
+    train_loss="batch",
     report=None,
 ):
     """Train a MAF (or spline-MAF) emulator on a weighted cosmological posterior.
@@ -92,6 +93,16 @@ def train_maf_emulator(
         of affine ones. Marginally sharper, at more parameters.
     seed : int
         Seed for the JAX PRNG.
+    train_loss : {"batch", "global"}
+        How the minibatch training loss normalises the weights. ``"batch"`` (the
+        original recipe) divides by the per-batch weight sum, i.e. a self-normalised
+        weighted mean over the batch; simple, but a biased minibatch estimator of
+        the full objective because the denominator is random from batch to batch,
+        so a low-mass batch is re-inflated to the same influence as a high-mass one.
+        ``"global"`` divides instead by a constant (the global training-weight sum,
+        scaled by ``n_train / batch_size``), which is the unbiased estimator of the
+        full weighted objective. The validation NLL is always the exact weighted
+        mean over the whole held-out set and is unaffected by this choice.
     report : callable, optional
         A ``report(epoch, val_nll)`` callback invoked after each epoch with the
         held-out weighted NLL. Used to stream progress to a hyperparameter
@@ -103,9 +114,14 @@ def train_maf_emulator(
     dict
         ``flow`` (the trained flowjax distribution, in standardised space),
         ``parameters`` (list, in order), ``mean`` and ``std`` (the standardiser,
-        each an array of length ``d``), and ``best_val_nll``. Draw physical
-        samples with ``flow.sample(key, (n,)) * std + mean``; evaluate density at
-        physical ``x`` with ``flow.log_prob((x - mean) / std)``.
+        each an array of length ``d``), and ``best_val_nll`` (the held-out weighted
+        NLL in *standardised* space: comparable across trials of the same model,
+        but not across models with different ``std``). Draw physical samples with
+        ``flow.sample(key, (n,)) * std + mean``; evaluate the physical-space density
+        at ``x`` with ``flow.log_prob((x - mean) / std) - np.sum(np.log(std))`` --
+        the final term is the standardisation Jacobian, needed for a correctly
+        normalised density (omitting it leaves the density off by a constant factor,
+        which biases any absolute cross-entropy or forward-KL computed from it).
 
     Notes
     -----
@@ -120,6 +136,9 @@ def train_maf_emulator(
     from flowjax.bijections import RationalQuadraticSpline
     from flowjax.distributions import Normal
     from flowjax.flows import masked_autoregressive_flow
+
+    if train_loss not in ("batch", "global"):
+        raise ValueError(f"train_loss must be 'batch' or 'global', got {train_loss!r}")
 
     if parameters is None:
         parameters = cosmological_parameters(samples)
@@ -157,11 +176,26 @@ def train_maf_emulator(
     opt_state = opt.init(eqx.filter(flow, eqx.is_inexact_array))
 
     def weighted_nll(fl, x, wt):
+        # Exact weighted-mean NLL over the given set. Correct for the full
+        # validation set (its denominator is deterministic); used for reporting
+        # and early stopping regardless of ``train_loss``.
         return -jnp.sum(wt * fl.log_prob(x)) / jnp.sum(wt)
+
+    w_tr_sum = float(jnp.sum(w_tr))
+    n_tr = int(z_tr.shape[0])
+
+    def train_nll(fl, x, wt):
+        lp = fl.log_prob(x)
+        if train_loss == "global":
+            # Divide by a constant (global train-weight sum scaled by n_tr/batch):
+            # an unbiased minibatch estimator of the full weighted objective.
+            return -jnp.sum(wt * lp) * n_tr / (x.shape[0] * w_tr_sum)
+        # "batch": self-normalised per-batch weighted mean (the original recipe).
+        return -jnp.sum(wt * lp) / jnp.sum(wt)
 
     @eqx.filter_jit
     def step(fl, ost, x, wt):
-        loss, grads = eqx.filter_value_and_grad(weighted_nll)(fl, x, wt)
+        loss, grads = eqx.filter_value_and_grad(train_nll)(fl, x, wt)
         updates, ost = opt.update(grads, ost, eqx.filter(fl, eqx.is_inexact_array))
         return eqx.apply_updates(fl, updates), ost, loss
 
