@@ -32,6 +32,12 @@ from cosmulator.parameters import (
     parameter_names,
 )
 from cosmulator.store import Emulator, EmulatorStore
+from cosmulator.validation import (
+    certify,
+    marginal_gof,
+    mmd,
+    out_of_bounds,
+)
 
 __all__ = [
     "__version__",
@@ -45,11 +51,15 @@ __all__ = [
     "Provenance",
     "Quality",
     "Training",
+    "certify",
     "cosmological_parameters",
     "effective_sample_size",
     "fetch",
     "forward_kl",
+    "marginal_gof",
+    "mmd",
     "moment_error",
+    "out_of_bounds",
     "parameter_names",
     "self_consistency",
 ]
