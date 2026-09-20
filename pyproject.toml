@@ -14,7 +14,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 # The JAX training stack sets the floor. Declaring anything lower produces an
 # install that imports but cannot train.
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "requests",

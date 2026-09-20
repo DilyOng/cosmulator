@@ -22,4 +22,4 @@ Installation
     pip install cosmulator            # inspect and use emulators (numpy only)
     pip install "cosmulator[train]"   # adds the JAX training stack
 
-Requires Python 3.12 or later.
+Requires Python 3.11 or later.
