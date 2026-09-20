@@ -182,7 +182,7 @@ def _mmd2(kernels, a, b):
 
 
 def mmd(target_samples, emulated_samples, weights=None, *,
-        max_points=1000, n_bootstrap=200, seed=0):
+        max_points=1000, n_permutations=200, seed=0):
     """Maximum Mean Discrepancy joint two-sample test (multi-scale, weighted).
 
     MMD measures how far apart two sample clouds are across all smooth features
@@ -194,15 +194,18 @@ def mmd(target_samples, emulated_samples, weights=None, *,
     be blind to structure at other scales.
 
     Both sample sets are standardised by the target's weighted moments first, so
-    the isotropic kernel sees comparable scales per parameter. The p-value comes
-    from a **wild (multiplier) bootstrap**: attach an independent random sign to
-    each pooled point and recompute the same statistic. This reproduces the
-    degenerate null of MMD^2 under H0 (q == P) *without* assuming the target and
-    emulator points are exchangeable, so -- unlike a label permutation -- it is
-    valid for a WEIGHTED target versus unweighted emulator draws (each point keeps
-    its weight; only its sign flips). Its calibration is checked in the tests and
-    is empirically slightly conservative -- the safe direction for a warning, since
-    it under-warns rather than false-alarms on a good emulator.
+    the isotropic kernel sees comparable scales per parameter. The ``mmd2``
+    statistic is always returned as a discrepancy score. A **p-value** is returned
+    **only when the target weights are uniform**, via a label-permutation null,
+    which is valid there because the pooled points are exchangeable under H0
+    (q == P). For a *weighted* target -- the usual nested-sampling case -- neither
+    a label permutation (points are not exchangeable, weighted vs unweighted) nor a
+    naive sign-flip wild bootstrap gives a calibrated null (both were found to be
+    strongly conservative in calibration experiments, because the statistic is not
+    degenerate under H0 for skewed weights and the RBF kernel's constant offset is
+    not removed). So ``pvalue`` is ``None`` for weighted targets; a validated
+    weighted null (a properly centred multiplier or spectral construction) is
+    deferred rather than shipped uncalibrated.
 
     Parameters
     ----------
@@ -217,19 +220,20 @@ def mmd(target_samples, emulated_samples, weights=None, *,
         is truncated to its highest-weight points (mass-preserving); raise it if
         the target's effective sample size exceeds it, or the joint test sees only
         the posterior peak.
-    n_bootstrap : int
-        Number of wild-bootstrap replicates for the null. ``0`` skips the p-value.
+    n_permutations : int
+        Number of label permutations for the (uniform-weight) null. ``0`` skips
+        the p-value.
     seed : int
         Seed for subsampling and permutations.
 
     Returns
     -------
     dict
-        ``mmd2`` (the observed statistic), ``pvalue`` (``None`` only when
-        ``n_bootstrap`` is 0), ``n_target``/``n_emulated`` actually used, and
-        ``retained_target_mass`` (the target posterior mass kept after truncation
-        to ``max_points``; below 1 the joint test sees only the highest-weight
-        region).
+        ``mmd2`` (the observed statistic), ``pvalue`` (``None`` for weighted
+        targets or when ``n_permutations`` is 0), ``n_target``/``n_emulated``
+        actually used, and ``retained_target_mass`` (the target posterior mass
+        kept after truncation to ``max_points``; below 1 the joint test sees only
+        the highest-weight region).
     """
     rng = np.random.default_rng(seed)
     target = np.atleast_2d(np.asarray(target_samples, dtype=float))
@@ -292,25 +296,30 @@ def mmd(target_samples, emulated_samples, weights=None, *,
     obs = _mmd2(kernels, a, b)
     base = {"mmd2": obs, "n_target": int(nx), "n_emulated": int(ny),
             "retained_target_mass": retained_mass}
-    if n_bootstrap <= 0:
+
+    # A calibrated p-value needs the pooled points to be EXCHANGEABLE under H0,
+    # which holds when both samples are i.i.d. draws from the same distribution --
+    # i.e. uniform target weights. When the target is a *weighted* nested-sampling
+    # measure and the emulator is unweighted i.i.d. draws, the two are not
+    # exchangeable, and a naive sign-flip wild bootstrap does not fix it (the
+    # statistic is non-degenerate under H0 for skewed weights, so it comes out
+    # badly miscalibrated). So for a weighted target we report the statistic but no
+    # p-value, pending a properly centred weighted null.
+    if n_permutations <= 0 or not uniform:
         return {**base, "pvalue": None}
 
-    # Wild (multiplier) bootstrap null. Flipping an independent random sign on
-    # each pooled point and recomputing the SAME statistic reproduces the null
-    # distribution of MMD^2 under H0. It keeps each point's weight fixed and only
-    # perturbs its sign, so it does not require the weighted target and unweighted
-    # emulator to be exchangeable (a label permutation would). With the kernel
-    # diagonal zeroed, E[sign_i sign_j] = 0 for i != j makes each bootstrap
-    # statistic mean-zero, matching the observed statistic's null mean of zero.
-    # Multiplying a zero-padded group weight vector by the pooled sign vector
-    # keeps the other group's block zero and leaves ||a||^2 (hence the unbiased
-    # normalisation) unchanged, since the signs square to one.
+    wpool = np.concatenate([wx, wy])
     ge = 0
-    for _ in range(n_bootstrap):
-        signs = rng.choice([-1.0, 1.0], size=nx + ny)
-        if _mmd2(kernels, a * signs, b * signs) >= obs:
+    for _ in range(n_permutations):
+        perm = rng.permutation(nx + ny)
+        ia, ib = perm[:nx], perm[nx:]
+        pa = np.zeros(nx + ny)
+        pb = np.zeros(nx + ny)
+        pa[ia] = wpool[ia] / wpool[ia].sum()
+        pb[ib] = wpool[ib] / wpool[ib].sum()
+        if _mmd2(kernels, pa, pb) >= obs:
             ge += 1
-    pvalue = (ge + 1) / (n_bootstrap + 1)
+    pvalue = (ge + 1) / (n_permutations + 1)
     return {**base, "pvalue": float(pvalue)}
 
 
@@ -350,9 +359,11 @@ def certify(target_samples, emulated_samples, weights=None, *,
     before the other metrics since a degenerate target can make them raise); then
     hard fails on the interpretable tolerances and unphysical out-of-bounds mass;
     then a warn if the joint MMD test still detects a difference the marginals
-    passed; otherwise pass. The MMD p-value (from the wild bootstrap, valid for
-    weighted targets too) never hard-fails, because it is guaranteed to shrink as
-    sample size grows even for a good emulator; it only warns.
+    passed; otherwise pass. The MMD p-value never hard-fails, because it is
+    guaranteed to shrink as sample size grows even for a good emulator, and it only
+    warns when a valid p-value exists (uniform-weight targets). For a weighted
+    target MMD is reported as a discrepancy but does not yet drive the verdict,
+    pending a validated weighted null.
     """
     tol = dict(DEFAULT_TOLERANCES)
     if tolerances:

@@ -79,49 +79,33 @@ class TestMmd:
         res = mmd(corr, decorr, seed=0)
         assert res["pvalue"] < 0.01
 
-    def test_weighted_target_has_pvalue(self):
-        # The wild bootstrap gives a valid p-value for a weighted target too.
+    def test_weighted_target_has_no_pvalue(self):
+        # No calibrated null exists yet for a weighted target vs unweighted
+        # emulator, so the statistic is reported but the p-value is withheld.
         rng = np.random.default_rng(5)
         target = rng.normal(size=(3000, 2))
         w = np.abs(rng.normal(size=3000)) + 0.01  # non-uniform
         emulated = rng.normal(size=(3000, 2))
         res = mmd(target, emulated, weights=w, seed=0)
-        assert res["pvalue"] is not None
-        assert 0.0 <= res["pvalue"] <= 1.0
+        assert res["pvalue"] is None
         assert 0.0 <= res["retained_target_mass"] <= 1.0
 
-    def test_weighted_decorrelation_detected(self):
-        # Power under H1 for a WEIGHTED target: correlation destroyed -> small p.
+    def test_weighted_statistic_detects_decorrelation(self):
+        # Even without a p-value, the mmd2 statistic is a valid discrepancy: a
+        # decorrelated weighted target must score higher than a matched one.
         rng = np.random.default_rng(21)
         n = 4000
         z = rng.normal(size=(n, 2))
         rho = 0.95
         target = np.column_stack(
             [z[:, 0], rho * z[:, 0] + np.sqrt(1 - rho**2) * z[:, 1]])
-        w = np.abs(rng.normal(size=n)) + 0.01  # non-uniform, position-independent
-        emulated = target.copy()
-        emulated[:, 1] = rng.permutation(emulated[:, 1])
-        res = mmd(target, emulated, weights=w, seed=0)
-        assert res["pvalue"] < 0.05
-
-    def test_bootstrap_calibrated_under_h0(self):
-        # The certificate for the null: under H0 (weighted target and emulator
-        # from the SAME distribution) the p-values must be ~uniform, so the
-        # rejection rate at alpha=0.1 must not be badly inflated. Averaged over
-        # independent replicates to keep it a real calibration check, not one seed.
-        reps, alpha, rejects = 40, 0.1, 0
-        for r in range(reps):
-            rng = np.random.default_rng(1000 + r)
-            target = rng.normal(size=(600, 2))
-            w = np.abs(rng.normal(size=600)) + 0.01
-            emulated = rng.normal(size=(600, 2))
-            p = mmd(target, emulated, weights=w, max_points=600,
-                    n_bootstrap=100, seed=r)["pvalue"]
-            rejects += p < alpha
-        # Nominal 0.1; the wild bootstrap is empirically slightly conservative
-        # (safe: it under-warns rather than false-alarms), so the rate must not be
-        # inflated above nominal. Slack allows noise over 40 replicates.
-        assert rejects / reps < 0.2
+        w = np.abs(rng.normal(size=n)) + 0.01
+        matched = target.copy()
+        decorr = target.copy()
+        decorr[:, 1] = rng.permutation(decorr[:, 1])
+        s_matched = mmd(target, matched, weights=w, seed=0)["mmd2"]
+        s_decorr = mmd(target, decorr, weights=w, seed=0)["mmd2"]
+        assert s_decorr > s_matched
 
     def test_reports_retained_mass_when_truncated(self):
         rng = np.random.default_rng(6)
@@ -201,12 +185,12 @@ class TestCertifyVerdicts:
         assert report["verdict"] == "insufficient"
 
     def test_weighted_match_does_not_spuriously_warn(self):
-        # Well-matched WEIGHTED case: the bootstrap p-value should not be tiny, so
-        # the joint test must not spuriously warn.
+        # Weighted target -> MMD has no p-value -> the joint test cannot warn.
+        # A well-matched weighted case must not warn.
         rng = np.random.default_rng(7)
         target = rng.normal(size=(10000, 3))
         w = np.abs(rng.normal(size=10000)) + 0.01  # non-uniform, position-independent
         emulated = rng.normal(size=(40000, 3))
         report = certify(target, emulated, weights=w, seed=0)
-        assert report["mmd"]["pvalue"] is not None
+        assert report["mmd"]["pvalue"] is None
         assert report["verdict"] != "warn"
