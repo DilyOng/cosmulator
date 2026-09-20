@@ -120,7 +120,7 @@ def tune(
                     raise optuna.TrialPruned()
         result = train_maf_emulator(
             samples, parameters=parameters, epochs=epochs, patience=patience,
-            seed=train_seed, report=reporter, **hp,
+            seed=train_seed, report=reporter, certify=False, **hp,
         )
         return result["best_val_nll"]
 

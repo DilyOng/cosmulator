@@ -46,6 +46,51 @@ def _weighted_standardiser(theta, weights):
     return mean, std
 
 
+def _weight_stratified_split(weights, val_fraction, test_fraction):
+    """Split sample indices into train/val/test, stratified by weight.
+
+    A uniform random split of a nested-sampling chain is high-variance: the few
+    points carrying most of the posterior mass can all land in one split, starving
+    the others and making early stopping and certification erratic. Systematic
+    sampling over the weight-sorted order instead gives every split a
+    representative slice of the weight distribution, deterministically.
+
+    Parameters
+    ----------
+    weights : numpy.ndarray, shape (n,)
+        Per-sample weights (need not be normalised).
+    val_fraction, test_fraction : float
+        Fractions for the early-stopping validation set and the held-out test set;
+        the remainder is the training set. ``test_fraction`` may be 0.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(train_idx, val_idx, test_idx)`` into the original ordering.
+    """
+    n = len(weights)
+    order = np.argsort(weights)[::-1]  # high to low weight
+
+    def systematic(frac, m):
+        # Pick ~frac of m positions, spread evenly (every ~1/frac-th).
+        idx = np.arange(m)
+        return (np.floor((idx + 1) * frac).astype(np.int64)
+                - np.floor(idx * frac).astype(np.int64)) == 1
+
+    label = np.array(["train"] * n)  # labels in weight-sorted order
+    if test_fraction > 0:
+        label[systematic(test_fraction, n)] = "test"
+    rest = np.where(label == "train")[0]
+    if val_fraction > 0 and rest.size:
+        val_frac_adj = val_fraction / (1.0 - test_fraction)
+        label[rest[systematic(val_frac_adj, rest.size)]] = "val"
+
+    out = np.empty(n, dtype=object)
+    out[order] = label
+    return (np.where(out == "train")[0], np.where(out == "val")[0],
+            np.where(out == "test")[0])
+
+
 def train_maf_emulator(
     samples,
     parameters=None,
@@ -61,6 +106,10 @@ def train_maf_emulator(
     spline=False,
     seed=0,
     train_loss="global",
+    test_fraction=0.15,
+    certify=True,
+    bounds=None,
+    certify_samples=50000,
     report=None,
 ):
     """Train a MAF (or spline-MAF) emulator on a weighted cosmological posterior.
@@ -105,6 +154,18 @@ def train_maf_emulator(
         tighter (0.88% vs 1.04% marginal width), so it is preferred; ``"batch"`` is
         kept for reproducing earlier results. The validation NLL is always the exact
         weighted mean over the whole held-out set and is unaffected by this choice.
+    test_fraction : float
+        Fraction of samples held out (weight-stratified) for certification, seen by
+        neither training nor early stopping, so the certificate measures
+        generalisation rather than memorisation. Pass ``0`` to skip the test split.
+    certify : bool
+        If true (and ``test_fraction`` > 0), certify the trained flow against the
+        held-out test set with :func:`cosmulator.validation.certify` and return the
+        verdict under ``certification``.
+    bounds : array_like, shape (d, 2), optional
+        Per-parameter prior limits, passed to certification for the out-of-bounds gate.
+    certify_samples : int
+        Number of flow draws used for certification.
     report : callable, optional
         A ``report(epoch, val_nll)`` callback invoked after each epoch with the
         held-out weighted NLL. Used to stream progress to a hyperparameter
@@ -124,6 +185,8 @@ def train_maf_emulator(
         the final term is the standardisation Jacobian, needed for a correctly
         normalised density (omitting it leaves the density off by a constant factor,
         which biases any absolute cross-entropy or forward-KL computed from it).
+        Also ``certification``: the :func:`cosmulator.validation.certify` verdict on
+        the held-out test set (``None`` if certification was skipped).
 
     Notes
     -----
@@ -156,9 +219,20 @@ def train_maf_emulator(
         keep = np.sort(order[:cutoff])
         theta, w = theta[keep], w[keep] / w[keep].sum()
 
-    mean, std = _weighted_standardiser(theta, w)
-    z = jnp.asarray((theta - mean) / std)
-    wj = jnp.asarray(w)
+    # Weight-stratified train / early-stop-val / held-out-test split. The test set
+    # is seen by neither training nor early stopping, so certification measures
+    # generalisation. The standardiser is fit on train+val only, so the test set
+    # does not leak even through the per-parameter moments.
+    do_test = certify and test_fraction > 0
+    train_idx, val_idx, test_idx = _weight_stratified_split(
+        w, val_fraction=0.1, test_fraction=(test_fraction if do_test else 0.0))
+    fit_idx = np.concatenate([train_idx, val_idx])
+    mean, std = _weighted_standardiser(theta[fit_idx], w[fit_idx] / w[fit_idx].sum())
+
+    z_tr = jnp.asarray((theta[train_idx] - mean) / std)
+    w_tr = jnp.asarray(w[train_idx])
+    z_val = jnp.asarray((theta[val_idx] - mean) / std)
+    w_val = jnp.asarray(w[val_idx])
 
     key = jax.random.key(seed)
     key, fkey = jax.random.split(key)
@@ -167,12 +241,6 @@ def train_maf_emulator(
         fkey, base_dist=Normal(jnp.zeros(d)), transformer=transformer,
         flow_layers=flow_layers, nn_width=nn_width, nn_depth=nn_depth,
     )
-
-    key, sk = jax.random.split(key)
-    perm = jax.random.permutation(sk, len(z))
-    n_val = max(1, int(0.1 * len(z)))
-    z_val, w_val = z[perm[:n_val]], wj[perm[:n_val]]
-    z_tr, w_tr = z[perm[n_val:]], wj[perm[n_val:]]
 
     opt = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(learning_rate))
     opt_state = opt.init(eqx.filter(flow, eqx.is_inexact_array))
@@ -219,10 +287,19 @@ def train_maf_emulator(
             if bad >= patience:
                 break
 
+    certification = None
+    if do_test and test_idx.size > 0:
+        from cosmulator.validation import certify as _certify
+        key, sk = jax.random.split(key)
+        gen = np.asarray(best_flow.sample(sk, (certify_samples,))) * std + mean
+        certification = _certify(
+            theta[test_idx], gen, weights=w[test_idx], bounds=bounds)
+
     return {
         "flow": best_flow,
         "parameters": parameters,
         "mean": np.asarray(mean),
         "std": np.asarray(std),
         "best_val_nll": best_val,
+        "certification": certification,
     }
