@@ -42,6 +42,7 @@ classifiers = [
 # stored emulators and running the test suite must not require JAX, so that a
 # reviewer or a laptop user can install and exercise the package cheaply.
 train = ["jax", "optax", "flowjax", "equinox"]
+hpo = ["optuna"]
 docs = ["sphinx", "sphinx_rtd_theme", "numpydoc"]
 test = ["pytest", "pytest-cov", "flake8", "pydocstyle", "packaging", "pre-commit"]
 

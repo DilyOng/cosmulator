@@ -60,6 +60,7 @@ def train_maf_emulator(
     mass_fraction=0.9999,
     spline=False,
     seed=0,
+    report=None,
 ):
     """Train a MAF (or spline-MAF) emulator on a weighted cosmological posterior.
 
@@ -91,6 +92,11 @@ def train_maf_emulator(
         of affine ones. Marginally sharper, at more parameters.
     seed : int
         Seed for the JAX PRNG.
+    report : callable, optional
+        A ``report(epoch, val_nll)`` callback invoked after each epoch with the
+        held-out weighted NLL. Used to stream progress to a hyperparameter
+        optimiser for pruning: the callback may raise to abort the trial early.
+        Kept generic so this module has no dependency on the optimiser.
 
     Returns
     -------
@@ -161,13 +167,15 @@ def train_maf_emulator(
 
     bs = min(batch_size, len(z_tr))
     best_val, best_flow, bad = np.inf, flow, 0
-    for _ in range(epochs):
+    for epoch in range(epochs):
         key, sk = jax.random.split(key)
         order = jax.random.permutation(sk, len(z_tr))
         for i in range(0, len(z_tr), bs):
             b = order[i:i + bs]
             flow, opt_state, _ = step(flow, opt_state, z_tr[b], w_tr[b])
         val = float(weighted_nll(flow, z_val, w_val))
+        if report is not None:
+            report(epoch, val)
         if np.isfinite(val) and val < best_val:
             best_val, best_flow, bad = val, flow, 0
         else:
