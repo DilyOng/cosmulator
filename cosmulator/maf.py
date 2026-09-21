@@ -185,8 +185,13 @@ def train_maf_emulator(
         the final term is the standardisation Jacobian, needed for a correctly
         normalised density (omitting it leaves the density off by a constant factor,
         which biases any absolute cross-entropy or forward-KL computed from it).
-        Also ``certification``: the :func:`cosmulator.validation.certify` verdict on
-        the held-out test set (``None`` if certification was skipped).
+        Also ``certification``: the :func:`cosmulator.validation.certify` verdict.
+        Its moment, marginal and MMD metrics are measured against the **full kept
+        chain** (a low-noise, non-leaking reference for marginal fidelity), while
+        the **held-out** test set supplies an out-of-sample density sentinel added
+        to the report as ``heldout_nll`` (with ``val_nll`` and ``overfit_gap_nll``):
+        a held-out NLL much larger than the validation NLL signals memorisation.
+        ``None`` if certification was skipped.
 
     Notes
     -----
@@ -292,8 +297,25 @@ def train_maf_emulator(
         from cosmulator.validation import certify as _certify
         key, sk = jax.random.split(key)
         gen = np.asarray(best_flow.sample(sk, (certify_samples,))) * std + mean
-        certification = _certify(
-            theta[test_idx], gen, weights=w[test_idx], bounds=bounds)
+        # Certify moments, marginals and MMD against the FULL kept chain, not the
+        # small held-out subset. Marginal fidelity does not leak from training (an
+        # MLE flow cannot narrow its marginal standard deviation by memorising
+        # points), and the full chain is a far less noisy yardstick: a 15% held-out
+        # subset's own weighted-variance sampling noise (worse than 1/sqrt(2 ESS)
+        # once weight skew and kurtosis are accounted for) can dwarf a genuine ~1%
+        # width error and fail a good emulator. The joint MMD carries no p-value for
+        # a weighted target, so it is descriptive here, not a pass/fail test.
+        certification = _certify(theta, gen, weights=w, bounds=bounds)
+        # The held-out test set is reserved for the out-of-sample density check --
+        # the genuine overfitting sentinel. If the flow memorised training points,
+        # its held-out NLL rises relative to the (early-stopping) validation NLL.
+        z_test = jnp.asarray((theta[test_idx] - mean) / std)
+        wt_test = jnp.asarray(w[test_idx])
+        heldout_nll = float(
+            -jnp.sum(wt_test * best_flow.log_prob(z_test)) / jnp.sum(wt_test))
+        certification["heldout_nll"] = heldout_nll
+        certification["val_nll"] = best_val
+        certification["overfit_gap_nll"] = heldout_nll - best_val
 
     return {
         "flow": best_flow,
