@@ -106,7 +106,7 @@ def train_maf_emulator(
     spline=False,
     seed=0,
     train_loss="global",
-    test_fraction=0.15,
+    test_fraction=0.05,
     certify=True,
     bounds=None,
     certify_samples=50000,
@@ -155,9 +155,11 @@ def train_maf_emulator(
         kept for reproducing earlier results. The validation NLL is always the exact
         weighted mean over the whole held-out set and is unaffected by this choice.
     test_fraction : float
-        Fraction of samples held out (weight-stratified) for certification, seen by
-        neither training nor early stopping, so the certificate measures
-        generalisation rather than memorisation. Pass ``0`` to skip the test split.
+        Fraction of samples held out (weight-stratified) for the out-of-sample
+        density sentinel, seen by neither training nor early stopping. Small by
+        default (0.05): moments and marginals are certified against the full chain,
+        so the held-out set only feeds the NLL sentinel and need not be large.
+        Pass ``0`` to skip the test split.
     certify : bool
         If true (and ``test_fraction`` > 0), certify the trained flow against the
         held-out test set with :func:`cosmulator.validation.certify` and return the
