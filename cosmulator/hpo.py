@@ -106,7 +106,14 @@ def tune(
         The completed study; ``study.best_params`` / ``study.best_value`` hold
         the best hyperparameters and their validation NLL.
     """
-    import optuna
+    # Import the submodules explicitly. On some installs ``optuna`` resolves as a
+    # namespace package whose top-level attributes (``optuna.samplers``,
+    # ``optuna.create_study``, ``optuna.TrialPruned``) are not auto-populated, so a
+    # bare ``import optuna`` then ``optuna.samplers`` raises AttributeError.
+    import optuna.exceptions
+    import optuna.pruners
+    import optuna.samplers
+    import optuna.study
 
     from cosmulator.maf import train_maf_emulator
 
@@ -117,7 +124,7 @@ def tune(
             def reporter(epoch, val_nll):
                 trial.report(val_nll, epoch)
                 if trial.should_prune():
-                    raise optuna.TrialPruned()
+                    raise optuna.exceptions.TrialPruned()
         result = train_maf_emulator(
             samples, parameters=parameters, epochs=epochs, patience=patience,
             seed=train_seed, report=reporter, certify=False, **hp,
@@ -131,7 +138,7 @@ def tune(
             n_startup_trials=random_startup_trials, n_warmup_steps=prune_warmup_epochs)
         if prune else optuna.pruners.NopPruner()
     )
-    study = optuna.create_study(
+    study = optuna.study.create_study(
         direction="minimize", sampler=sampler, pruner=pruner,
         storage=storage, study_name=study_name, load_if_exists=True,
     )
