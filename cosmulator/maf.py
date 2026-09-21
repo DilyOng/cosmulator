@@ -307,7 +307,8 @@ def train_maf_emulator(
         # once weight skew and kurtosis are accounted for) can dwarf a genuine ~1%
         # width error and fail a good emulator. The joint MMD carries no p-value for
         # a weighted target, so it is descriptive here, not a pass/fail test.
-        certification = _certify(theta, gen, weights=w, bounds=bounds)
+        certification = _certify(theta, gen, weights=w, parameters=parameters,
+                                 bounds=bounds)
         # The held-out test set is reserved for the out-of-sample density check --
         # the genuine overfitting sentinel. If the flow memorised training points,
         # its held-out NLL rises relative to the (early-stopping) validation NLL.

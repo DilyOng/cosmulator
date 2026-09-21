@@ -184,6 +184,28 @@ class TestCertifyVerdicts:
         report = certify(target, emulated, weights=w, min_ess=200, seed=0)
         assert report["verdict"] == "insufficient"
 
+    def test_per_parameter_table_is_labelled(self):
+        target = _gaussian(4000, 3, 1)
+        emulated = _gaussian(4000, 3, 2)
+        report = certify(target, emulated, parameters=["a", "b", "c"], seed=0)
+        assert [r["parameter"] for r in report["per_parameter"]] == ["a", "b", "c"]
+        assert "worst_width" in report and "worst_shape" in report
+
+    def test_single_parameter_width_gate_catches_hidden_bad_param(self):
+        # One parameter badly over-dispersed, but the model-mean width stays under
+        # tolerance: the per-parameter cap must fail it and name the parameter.
+        rng = np.random.default_rng(9)
+        d = 8
+        target = rng.normal(size=(5000, d))
+        emulated = target.copy()
+        emulated[:, 3] *= 1.04  # ~4% too wide on parameter index 3 only
+        names = [f"x{i}" for i in range(d)]
+        report = certify(target, emulated, parameters=names, seed=0)
+        assert report["moments"]["mean_abs_width_err_pct"] < 1.0  # mean looks fine
+        assert report["verdict"] == "fail"
+        assert report["worst_width"]["parameter"] == "x3"
+        assert any("x3" in r and "single-parameter" in r for r in report["reasons"])
+
     def test_weighted_match_does_not_spuriously_warn(self):
         # Weighted target -> MMD has no p-value -> the joint test cannot warn.
         # A well-matched weighted case must not warn.

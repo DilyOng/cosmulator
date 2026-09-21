@@ -38,6 +38,8 @@ from cosmulator.diagnostics import (
 # on the downstream use of the posterior, not on the statistics.
 DEFAULT_TOLERANCES = {
     "width_pct": 1.0,        # mean |sigma_q - sigma_P| / sigma_P, per cent
+    "max_width_pct": 3.0,    # worst single-parameter width error (so one bad
+                             # parameter cannot hide behind a good mean)
     "bias_sigma": 0.1,       # mean |mean_q - mean_P| / sigma_P
     "wasserstein_sigma": 0.05,  # worst-parameter 1D Wasserstein, in target sigma
     "oob_frac": 0.001,       # fraction of emulator mass outside the prior box
@@ -324,7 +326,8 @@ def mmd(target_samples, emulated_samples, weights=None, *,
 
 
 def certify(target_samples, emulated_samples, weights=None, *,
-            bounds=None, tolerances=None, min_ess=DEFAULT_MIN_ESS, seed=0):
+            parameters=None, bounds=None, tolerances=None,
+            min_ess=DEFAULT_MIN_ESS, seed=0):
     """Run the full validation battery and return a tolerance-based verdict.
 
     Parameters
@@ -336,6 +339,8 @@ def certify(target_samples, emulated_samples, weights=None, *,
         Samples drawn from the trained emulator.
     weights : array_like, optional
         Weights for the target samples (nested-sampling posterior weights).
+    parameters : sequence of str, optional
+        Parameter names, used to label the per-parameter breakdown.
     bounds : array_like, shape (d, 2), optional
         Prior limits per parameter; enables the out-of-bounds gate.
     tolerances : dict, optional
@@ -351,7 +356,12 @@ def certify(target_samples, emulated_samples, weights=None, *,
         ``verdict`` (``"pass"``/``"warn"``/``"insufficient"``/``"fail"``),
         ``reasons`` (list of strings), ``ess``, and every metric computed
         (``moments``, ``marginals``, ``mmd``, and ``oob_frac`` when ``bounds``
-        given), so a verdict can be audited without recomputing.
+        given), so a verdict can be audited without recomputing. Also a
+        ``per_parameter`` table (width/bias/Wasserstein/KS per parameter) with
+        ``worst_width`` and ``worst_shape`` (the worst parameter by width and by
+        1D shape), so a single poorly-emulated parameter is flagged rather than
+        averaged away. The verdict fails if any single parameter's width exceeds
+        ``max_width_pct``.
 
     Notes
     -----
@@ -389,12 +399,41 @@ def certify(target_samples, emulated_samples, weights=None, *,
     if bounds is not None:
         report["oob_frac"] = out_of_bounds(emulated_samples, bounds)
 
+    # Per-parameter breakdown, so a single poorly-emulated parameter is visible
+    # and not hidden behind a good model-averaged mean. Note width measures spread
+    # only; a parameter with the right width can still have the wrong *shape*
+    # (a boundary edge or skew), which the per-parameter Wasserstein/KS catch.
+    mom, marg = report["moments"], report["marginals"]
+    d = len(mom["width_error_pct"])
+    names = list(parameters) if parameters is not None else [f"p{i}" for i in range(d)]
+    report["per_parameter"] = [
+        {"parameter": names[i],
+         "width_err_pct": mom["width_error_pct"][i],
+         "bias_sigma": mom["bias_sigma"][i],
+         "wasserstein_sigma": marg["wasserstein_sigma"][i],
+         "ks": marg["ks"][i]}
+        for i in range(d)
+    ]
+    aw = [abs(x) for x in mom["width_error_pct"]]
+    iw = max(range(d), key=lambda i: aw[i])
+    report["max_abs_width_err_pct"] = aw[iw]
+    report["worst_width"] = {"parameter": names[iw],
+                             "width_err_pct": mom["width_error_pct"][iw]}
+    ish = max(range(d), key=lambda i: marg["wasserstein_sigma"][i])
+    report["worst_shape"] = {"parameter": names[ish],
+                             "wasserstein_sigma": marg["wasserstein_sigma"][ish]}
+
     reasons = []
     width = report["moments"]["mean_abs_width_err_pct"]
     bias = report["moments"]["mean_abs_bias_sigma"]
     wass = report["marginals"]["max_wasserstein_sigma"]
     if width > tol["width_pct"]:
         reasons.append(f"width error {width:.2f}% > {tol['width_pct']}%")
+    if report["max_abs_width_err_pct"] > tol["max_width_pct"]:
+        reasons.append(
+            f"parameter {report['worst_width']['parameter']} width error "
+            f"{report['max_abs_width_err_pct']:.2f}% > {tol['max_width_pct']}% "
+            f"(single-parameter cap)")
     if bias > tol["bias_sigma"]:
         reasons.append(f"bias {bias:.3f} sigma > {tol['bias_sigma']}")
     if wass > tol["wasserstein_sigma"]:
