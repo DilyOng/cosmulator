@@ -12,10 +12,34 @@ import pytest
 
 from cosmulator import maf as maf_module
 from cosmulator.maf import (
+    _from_unbounded,
+    _to_unbounded,
     _weight_stratified_split,
     _weighted_standardiser,
     train_maf_emulator,
 )
+
+
+class TestBijector:
+    # two-sided, lower-only, upper-only, unbounded
+    BOUNDS = np.array([[0.0, 100.0], [0.0, np.inf], [-np.inf, 1.0],
+                       [-np.inf, np.inf]])
+
+    def test_roundtrip_is_exact(self):
+        rng = np.random.default_rng(0)
+        x = np.column_stack([rng.uniform(1, 99, 500), rng.uniform(0.1, 5, 500),
+                             rng.uniform(-5, 0.9, 500), rng.normal(size=500)])
+        y = _to_unbounded(x, self.BOUNDS)
+        assert np.isfinite(y).all()
+        assert np.allclose(_from_unbounded(y, self.BOUNDS), x, atol=1e-9)
+
+    def test_inverse_always_lands_in_bounds(self):
+        rng = np.random.default_rng(1)
+        y = rng.normal(0, 5, size=(2000, 4))
+        x = _from_unbounded(y, self.BOUNDS)
+        assert x[:, 0].min() > 0 and x[:, 0].max() < 100   # two-sided
+        assert x[:, 1].min() > 0                            # lower bound
+        assert x[:, 2].max() < 1                            # upper bound
 
 
 class _FakeSamples:

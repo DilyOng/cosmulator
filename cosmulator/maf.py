@@ -91,6 +91,54 @@ def _weight_stratified_split(weights, val_fraction, test_fraction):
             np.where(out == "test")[0])
 
 
+def _to_unbounded(theta, bounds, eps=1e-6):
+    """Map bounded parameters to the whole real line, per column.
+
+    A normalising flow has infinite support, so a posterior against a hard prior
+    wall (H0 at 100, mnu>=0) forces the flow to fake a cliff, which it rounds and
+    leaks past. Mapping the bounded box to R turns each wall into a smooth tail the
+    Gaussian-base flow handles naturally, and makes out-of-bounds mass exactly zero.
+    Two-sided ``[a, b]`` uses a logit; one-sided uses a log; unbounded is identity.
+    """
+    theta = np.asarray(theta, dtype=np.float64)
+    lo, hi = bounds[:, 0], bounds[:, 1]
+    both = np.isfinite(lo) & np.isfinite(hi)
+    low = np.isfinite(lo) & ~np.isfinite(hi)
+    up = ~np.isfinite(lo) & np.isfinite(hi)
+    y = theta.copy()
+    if both.any():
+        j = np.where(both)[0]
+        u = np.clip((theta[:, j] - lo[j]) / (hi[j] - lo[j]), eps, 1 - eps)
+        y[:, j] = np.log(u / (1 - u))
+    if low.any():
+        j = np.where(low)[0]
+        y[:, j] = np.log(np.maximum(theta[:, j] - lo[j], eps))
+    if up.any():
+        j = np.where(up)[0]
+        y[:, j] = -np.log(np.maximum(hi[j] - theta[:, j], eps))
+    return y
+
+
+def _from_unbounded(y, bounds):
+    """Inverse of :func:`_to_unbounded` (map R back into the prior box, per column)."""
+    y = np.asarray(y, dtype=np.float64)
+    lo, hi = bounds[:, 0], bounds[:, 1]
+    both = np.isfinite(lo) & np.isfinite(hi)
+    low = np.isfinite(lo) & ~np.isfinite(hi)
+    up = ~np.isfinite(lo) & np.isfinite(hi)
+    theta = y.copy()
+    if both.any():
+        j = np.where(both)[0]
+        theta[:, j] = lo[j] + (hi[j] - lo[j]) / (1.0 + np.exp(-y[:, j]))
+    if low.any():
+        j = np.where(low)[0]
+        theta[:, j] = lo[j] + np.exp(y[:, j])
+    if up.any():
+        j = np.where(up)[0]
+        theta[:, j] = hi[j] - np.exp(-y[:, j])
+    return theta
+
+
 def train_maf_emulator(
     samples,
     parameters=None,
@@ -109,6 +157,7 @@ def train_maf_emulator(
     test_fraction=0.05,
     certify=True,
     bounds=None,
+    bijector=False,
     certify_samples=50000,
     report=None,
 ):
@@ -165,7 +214,15 @@ def train_maf_emulator(
         held-out test set with :func:`cosmulator.validation.certify` and return the
         verdict under ``certification``.
     bounds : array_like, shape (d, 2), optional
-        Per-parameter prior limits, passed to certification for the out-of-bounds gate.
+        Per-parameter prior limits ``(lower, upper)`` (use ``+/-inf`` for an
+        unbounded side). Passed to certification for the out-of-bounds gate, and
+        required for ``bijector``.
+    bijector : bool
+        If true (and ``bounds`` given), map each bounded parameter to the whole real
+        line before training (logit for two-sided, log for one-sided) so hard prior
+        walls become smooth tails the flow can capture without rounding or leaking.
+        The trained flow lives in the transformed+standardised space; sampling and
+        certification invert the transform, so out-of-bounds mass is exactly zero.
     certify_samples : int
         Number of flow draws used for certification.
     report : callable, optional
@@ -226,6 +283,13 @@ def train_maf_emulator(
         keep = np.sort(order[:cutoff])
         theta, w = theta[keep], w[keep] / w[keep].sum()
 
+    # Optional bijector: map bounded parameters to R so the flow works in an
+    # unconstrained space (hard walls become smooth tails). theta stays in physical
+    # units (the certification target); theta_t is what the flow actually sees.
+    use_bijector = bool(bijector) and bounds is not None
+    bnds = np.asarray(bounds, dtype=np.float64) if use_bijector else None
+    theta_t = _to_unbounded(theta, bnds) if use_bijector else theta
+
     # Weight-stratified train / early-stop-val / held-out-test split. The test set
     # is seen by neither training nor early stopping, so certification measures
     # generalisation. The standardiser is fit on train+val only, so the test set
@@ -234,11 +298,11 @@ def train_maf_emulator(
     train_idx, val_idx, test_idx = _weight_stratified_split(
         w, val_fraction=0.1, test_fraction=(test_fraction if do_test else 0.0))
     fit_idx = np.concatenate([train_idx, val_idx])
-    mean, std = _weighted_standardiser(theta[fit_idx], w[fit_idx] / w[fit_idx].sum())
+    mean, std = _weighted_standardiser(theta_t[fit_idx], w[fit_idx] / w[fit_idx].sum())
 
-    z_tr = jnp.asarray((theta[train_idx] - mean) / std)
+    z_tr = jnp.asarray((theta_t[train_idx] - mean) / std)
     w_tr = jnp.asarray(w[train_idx])
-    z_val = jnp.asarray((theta[val_idx] - mean) / std)
+    z_val = jnp.asarray((theta_t[val_idx] - mean) / std)
     w_val = jnp.asarray(w[val_idx])
 
     key = jax.random.key(seed)
@@ -298,7 +362,8 @@ def train_maf_emulator(
     if do_test and test_idx.size > 0:
         from cosmulator.validation import certify as _certify
         key, sk = jax.random.split(key)
-        gen = np.asarray(best_flow.sample(sk, (certify_samples,))) * std + mean
+        gen_t = np.asarray(best_flow.sample(sk, (certify_samples,))) * std + mean
+        gen = _from_unbounded(gen_t, bnds) if use_bijector else gen_t
         # Certify moments, marginals and MMD against the FULL kept chain, not the
         # small held-out subset. Marginal fidelity does not leak from training (an
         # MLE flow cannot narrow its marginal standard deviation by memorising
@@ -312,7 +377,7 @@ def train_maf_emulator(
         # The held-out test set is reserved for the out-of-sample density check --
         # the genuine overfitting sentinel. If the flow memorised training points,
         # its held-out NLL rises relative to the (early-stopping) validation NLL.
-        z_test = jnp.asarray((theta[test_idx] - mean) / std)
+        z_test = jnp.asarray((theta_t[test_idx] - mean) / std)
         wt_test = jnp.asarray(w[test_idx])
         heldout_nll = float(
             -jnp.sum(wt_test * best_flow.log_prob(z_test)) / jnp.sum(wt_test))
@@ -327,4 +392,6 @@ def train_maf_emulator(
         "std": np.asarray(std),
         "best_val_nll": best_val,
         "certification": certification,
+        "bijector": use_bijector,
+        "bounds": (bnds if use_bijector else None),
     }
