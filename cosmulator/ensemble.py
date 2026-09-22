@@ -197,6 +197,26 @@ class EnsembleEmulator:
         log_q = self.log_prob(theta)
         return float(np.mean(log_q) + log_V)
 
+    def knn_kl(self, samples, weights=None, k=5, n_true=20000, n_emu=20000, seed=0):
+        """k-NN KL divergence between the true samples and the emulator's samples.
+
+        The headline emulator-accuracy number: ``D_KL(true || emulated)`` (and the
+        reverse) estimated directly in cosmological-parameter space from equal-weight
+        draws of each, with no nuisances and no prior term (see
+        :func:`cosmulator.diagnostics.knn_kl_divergence`). Near zero means the
+        emulator matches the true marginal posterior.
+        """
+        from cosmulator.diagnostics import (equal_weight_resample,
+                                            knn_kl_divergence)
+
+        theta = np.asarray(samples[self.parameters].to_numpy(), dtype=np.float64)
+        if weights is None:
+            weights = np.asarray(samples.get_weights(), dtype=np.float64)
+        true = equal_weight_resample(theta, weights, size=n_true, seed=seed)
+        emu = self.sample(n_emu, seed=seed + 1)
+        return {"kl_true_emu": knn_kl_divergence(true, emu, k=k),
+                "kl_emu_true": knn_kl_divergence(emu, true, k=k)}
+
     # ------------------------------------------------------------- persistence
     def save(self, directory):
         """Serialise the ensemble to ``directory`` (one .eqx per member + metadata)."""

@@ -289,6 +289,121 @@ def moment_error(target_samples, emulated_samples, weights=None):
     }
 
 
+def equal_weight_resample(samples, weights, size=None, seed=0):
+    """Systematic (low-variance) resample of a weighted set to equal weights.
+
+    The k-NN KL estimator wants unit-weight draws from the posterior, not the
+    weighted nested-sampling points. Systematic resampling picks one point per
+    equal-mass stratum of the CDF, so it reproduces the weighted distribution
+    with far less noise than i.i.d. multinomial resampling.
+
+    Parameters
+    ----------
+    samples : array_like, shape (n, d)
+        Weighted samples.
+    weights : array_like, shape (n,)
+        Non-negative weights (need not be normalised).
+    size : int, optional
+        Number of equal-weight samples to return. Defaults to the effective
+        sample size (rounded), which is the honest amount of independent
+        information the weighted set carries.
+    seed : int
+        Seed for the single random offset.
+
+    Returns
+    -------
+    numpy.ndarray, shape (size, d)
+        Unit-weight samples.
+    """
+    samples = np.atleast_2d(np.asarray(samples, dtype=float))
+    w = np.asarray(weights, dtype=float)
+    w = np.where(np.isfinite(w) & (w > 0), w, 0.0)
+    cdf = np.cumsum(w)
+    cdf /= cdf[-1]
+    if size is None:
+        size = int(round(effective_sample_size(w)))
+    size = max(int(size), 1)
+    u = (np.random.default_rng(seed).random() + np.arange(size)) / size
+    idx = np.searchsorted(cdf, u)
+    idx = np.clip(idx, 0, len(samples) - 1)
+    return samples[idx]
+
+
+def knn_kl_divergence(p_samples, q_samples, k=5, standardise=True, eps=1e-12):
+    r"""k-nearest-neighbour estimate of ``D_KL(P || Q)`` from two sample sets.
+
+    This is the honest headline measure of emulator accuracy: the divergence
+    between the *true* marginal posterior samples ``P`` and the *emulated*
+    samples ``Q``, computed directly in the parameter space of interest (e.g. the
+    six cosmological parameters), with no nuisances and no prior-volume term. It
+    is the two-sample Wang--Kulkarni--Verdu / Perez-Cruz estimator
+
+    .. math::
+        \hat D_{KL}(P\|Q) = \frac{d}{n}\sum_{i=1}^{n}
+            \log\frac{\nu_k(i)}{\rho_k(i)} + \log\frac{m}{n-1},
+
+    where ``rho_k(i)`` is the distance from ``P_i`` to its ``k``-th neighbour
+    within ``P`` (excluding itself) and ``nu_k(i)`` the distance to its ``k``-th
+    neighbour in ``Q``. The two hard-boundary biases that wreck a
+    single-sample entropy estimate cancel here, because ``P`` and ``Q`` share the
+    same bounded support. A perfect emulator gives an estimate near zero (small
+    negative values are ordinary estimator noise when ``P`` and ``Q`` match).
+
+    Unlike anesthetic's nested-sampling ``D_KL`` (the thermodynamic information
+    gain against the prior over *all* sampled dimensions, nuisances included),
+    this does not conflate the model's information content with the emulator's
+    fidelity.
+
+    Parameters
+    ----------
+    p_samples : array_like, shape (n, d)
+        Equal-weight samples from the true distribution ``P`` (see
+        :func:`equal_weight_resample`).
+    q_samples : array_like, shape (m, d)
+        Equal-weight samples from the emulator ``Q``.
+    k : int
+        Neighbour rank. Larger ``k`` lowers variance at some bias cost; the
+        bias-correction terms cancel between the two sets for a shared ``k``.
+    standardise : bool
+        Standardise both sets by ``P``'s mean and standard deviation before the
+        neighbour search. KL is invariant under this shared affine map, but the
+        estimator is better behaved when distances are isotropic.
+    eps : float
+        Floor on neighbour distances, to avoid ``log 0`` from duplicate points.
+
+    Returns
+    -------
+    float
+        The estimated ``D_KL(P || Q)`` in nats.
+    """
+    from scipy.spatial import cKDTree
+
+    P = np.atleast_2d(np.asarray(p_samples, dtype=float))
+    Q = np.atleast_2d(np.asarray(q_samples, dtype=float))
+    n, d = P.shape
+    m, dq = Q.shape
+    if d != dq:
+        raise ValueError(f"dimensionality mismatch: P has {d}, Q has {dq}")
+    if n <= k or m < k:
+        raise ValueError(f"need more than k={k} samples in each set (n={n}, m={m})")
+
+    if standardise:
+        mu = P.mean(axis=0)
+        sd = P.std(axis=0)
+        sd = np.where(sd > 0, sd, 1.0)
+        P = (P - mu) / sd
+        Q = (Q - mu) / sd
+
+    # rho: k-th neighbour within P (query k+1, drop the self match at rank 0)
+    rho = cKDTree(P).query(P, k=k + 1)[0][:, k]
+    # nu: k-th neighbour of each P_i in Q
+    nu = cKDTree(Q).query(P, k=k)[0]
+    nu = nu[:, k - 1] if k > 1 else nu
+    rho = np.maximum(rho, eps)
+    nu = np.maximum(nu, eps)
+    return float(d * np.mean(np.log(nu / rho)) + np.log(m / (n - 1.0)))
+
+
 def effective_sample_size(weights):
     r"""Return the effective number of independent samples in a weighted set.
 

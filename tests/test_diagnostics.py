@@ -9,7 +9,9 @@ import pytest
 
 from cosmulator.diagnostics import (
     effective_sample_size,
+    equal_weight_resample,
     forward_kl,
+    knn_kl_divergence,
     moment_error,
     self_consistency,
 )
@@ -237,6 +239,45 @@ class TestEffectiveSampleSize:
         """A degenerate chain reports no effective samples rather than NaN."""
         assert effective_sample_size([]) == 0.0
         assert effective_sample_size([0.0, 0.0]) == 0.0
+
+
+class TestKnnKLDivergence:
+    def test_recovers_gaussian_kl(self):
+        # D_KL(N(0,I) || N(mu,I)) = 0.5||mu||^2 in closed form.
+        rng = np.random.default_rng(0)
+        d, mu = 4, 0.8
+        shift = np.full(d, mu)
+        P = rng.normal(size=(20000, d))
+        Q = rng.normal(size=(20000, d)) + shift
+        expected = 0.5 * np.sum(shift ** 2)          # = 0.5 * d * mu^2 = 1.28
+        est = knn_kl_divergence(P, Q, k=5)
+        assert est == pytest.approx(expected, abs=0.15)
+
+    def test_near_zero_for_identical_distributions(self):
+        rng = np.random.default_rng(1)
+        P = rng.normal(size=(15000, 3))
+        Q = rng.normal(size=(15000, 3))
+        assert abs(knn_kl_divergence(P, Q, k=5)) < 0.1
+
+    def test_is_asymmetric_and_nonnegative_for_different(self):
+        rng = np.random.default_rng(2)
+        P = rng.normal(size=(12000, 2))
+        Q = rng.normal(size=(12000, 2)) * 2.5        # different spread
+        assert knn_kl_divergence(P, Q, k=5) > 0.1
+        assert knn_kl_divergence(Q, P, k=5) > 0.1
+
+
+class TestEqualWeightResample:
+    def test_reproduces_weighted_mean(self):
+        theta = np.vstack([np.zeros((1000, 1)), 10 * np.ones((1000, 1))])
+        w = np.concatenate([np.full(1000, 9.0), np.full(1000, 1.0)])
+        out = equal_weight_resample(theta, w, size=5000, seed=0)
+        assert out.mean() == pytest.approx(1.0, abs=0.05)   # 0.9*0 + 0.1*10
+
+    def test_default_size_is_ess(self):
+        w = np.abs(np.random.default_rng(0).normal(size=4000)) + 1e-3
+        out = equal_weight_resample(np.arange(4000)[:, None], w)
+        assert out.shape[0] == round(effective_sample_size(w))
 
 
 def test_diagnostics_do_not_require_jax():
