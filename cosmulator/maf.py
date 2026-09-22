@@ -46,6 +46,18 @@ def _weighted_standardiser(theta, weights):
     return mean, std
 
 
+def _weighted_cov(theta, weights, mean):
+    """Weighted covariance matrix (denominator 1, weights normalised to sum 1).
+
+    Its diagonal matches :func:`_weighted_standardiser`'s variance, so Cholesky
+    whitening (``L^{-1}(x - mean)`` with ``cov = L L^T``) generalises the diagonal
+    standardiser to also remove linear correlations -- mapping the posterior to an
+    isotropic, axis-aligned blob close to the flow's Normal base.
+    """
+    dx = theta - mean
+    return (dx * weights[:, None]).T @ dx
+
+
 def _weight_stratified_split(weights, val_fraction, test_fraction):
     """Split sample indices into train/val/test, stratified by weight.
 
@@ -201,6 +213,7 @@ def train_maf_emulator(
     certify=True,
     bounds=None,
     bijector=False,
+    whiten=False,
     certify_samples=50000,
     report=None,
 ):
@@ -271,6 +284,12 @@ def train_maf_emulator(
         (recommended -- a blanket transform warps interior marginals and hurts
         them); a list of parameter names transforms exactly those. The parameters
         (or wall sides) actually transformed are returned under ``railing_params``.
+    whiten : bool
+        If true, replace the diagonal standardiser with a full Cholesky whitener
+        (``z = L^{-1}(x - mean)``, ``cov = L L^T`` from the weighted fit set) so the
+        flow sees an isotropic, axis-aligned target with linear correlations
+        removed. Applied after any bijector. The Cholesky factor is returned under
+        ``whiten_L`` (``None`` when off) and inverted for sampling/certification.
     certify_samples : int
         Number of flow draws used for certification.
     report : callable, optional
@@ -366,11 +385,29 @@ def train_maf_emulator(
     train_idx, val_idx, test_idx = _weight_stratified_split(
         w, val_fraction=0.1, test_fraction=(test_fraction if do_test else 0.0))
     fit_idx = np.concatenate([train_idx, val_idx])
-    mean, std = _weighted_standardiser(theta_t[fit_idx], w[fit_idx] / w[fit_idx].sum())
+    w_fit = w[fit_idx] / w[fit_idx].sum()
+    mean, std = _weighted_standardiser(theta_t[fit_idx], w_fit)
 
-    z_tr = jnp.asarray((theta_t[train_idx] - mean) / std)
+    # Whitening: replace the diagonal standardiser with a full Cholesky whitener
+    # z = L^{-1}(x - mean) (cov = L L^T), so the flow sees an isotropic, axis-
+    # aligned target with linear correlations removed -- closer to its Normal base
+    # and a better-conditioned loss. std is kept as ones so the return contract and
+    # the diagonal path are unchanged when whiten is off.
+    if whiten:
+        cov = _weighted_cov(theta_t[fit_idx], w_fit, mean)
+        whiten_L = np.linalg.cholesky(cov + 1e-12 * np.eye(d))
+        _Linv = np.linalg.inv(whiten_L)
+        std = np.ones(d)
+        _fwd = lambda x: (x - mean) @ _Linv.T
+        _inv = lambda z: z @ whiten_L.T + mean
+    else:
+        whiten_L = None
+        _fwd = lambda x: (x - mean) / std
+        _inv = lambda z: z * std + mean
+
+    z_tr = jnp.asarray(_fwd(theta_t[train_idx]))
     w_tr = jnp.asarray(w[train_idx])
-    z_val = jnp.asarray((theta_t[val_idx] - mean) / std)
+    z_val = jnp.asarray(_fwd(theta_t[val_idx]))
     w_val = jnp.asarray(w[val_idx])
 
     key = jax.random.key(seed)
@@ -430,7 +467,7 @@ def train_maf_emulator(
     if do_test and test_idx.size > 0:
         from cosmulator.validation import certify as _certify
         key, sk = jax.random.split(key)
-        gen_t = np.asarray(best_flow.sample(sk, (certify_samples,))) * std + mean
+        gen_t = _inv(np.asarray(best_flow.sample(sk, (certify_samples,))))
         gen = _from_unbounded(gen_t, bnds) if use_bijector else gen_t
         # Certify moments, marginals and MMD against the FULL kept chain, not the
         # small held-out subset. Marginal fidelity does not leak from training (an
@@ -445,7 +482,7 @@ def train_maf_emulator(
         # The held-out test set is reserved for the out-of-sample density check --
         # the genuine overfitting sentinel. If the flow memorised training points,
         # its held-out NLL rises relative to the (early-stopping) validation NLL.
-        z_test = jnp.asarray((theta_t[test_idx] - mean) / std)
+        z_test = jnp.asarray(_fwd(theta_t[test_idx]))
         wt_test = jnp.asarray(w[test_idx])
         heldout_nll = float(
             -jnp.sum(wt_test * best_flow.log_prob(z_test)) / jnp.sum(wt_test))
@@ -463,4 +500,5 @@ def train_maf_emulator(
         "bijector": use_bijector,
         "bounds": (bnds if use_bijector else None),
         "railing_params": railing_params,
+        "whiten_L": whiten_L,
     }

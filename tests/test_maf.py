@@ -16,6 +16,7 @@ from cosmulator.maf import (
     _railing_bounds,
     _to_unbounded,
     _weight_stratified_split,
+    _weighted_cov,
     _weighted_quantile,
     _weighted_standardiser,
     train_maf_emulator,
@@ -64,6 +65,29 @@ class TestSelectiveRailing:
         assert np.isfinite(eff[0, 0]) and eff[0, 0] == 0.0   # lower wall kept
         assert not np.isfinite(eff[0, 1])           # far upper wall dropped
         assert not np.isfinite(eff[1]).any()        # interior column untouched
+
+
+class TestWhitening:
+    def test_cov_diagonal_matches_standardiser_variance(self):
+        rng = np.random.default_rng(0)
+        theta = rng.normal(size=(40000, 3)) * [2.0, 0.5, 5.0] + [1.0, -3.0, 10.0]
+        w = np.full(len(theta), 1.0 / len(theta))
+        mean, std = _weighted_standardiser(theta, w)
+        cov = _weighted_cov(theta, w, mean)
+        assert np.allclose(np.sqrt(np.diag(cov)), std, rtol=1e-6)
+
+    def test_cholesky_whitening_gives_identity_covariance(self):
+        rng = np.random.default_rng(1)
+        # correlated Gaussian: whitening should decorrelate to identity cov.
+        A = np.array([[3.0, 0.0], [2.0, 1.0]])
+        theta = rng.normal(size=(60000, 2)) @ A.T + [5.0, -2.0]
+        w = np.full(len(theta), 1.0 / len(theta))
+        mean = w @ theta
+        cov = _weighted_cov(theta, w, mean)
+        L = np.linalg.cholesky(cov)
+        z = (theta - mean) @ np.linalg.inv(L).T
+        zc = _weighted_cov(z, w, w @ z)
+        assert np.allclose(zc, np.eye(2), atol=0.02)
 
 
 class _FakeSamples:
