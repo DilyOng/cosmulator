@@ -13,8 +13,10 @@ import pytest
 from cosmulator import maf as maf_module
 from cosmulator.maf import (
     _from_unbounded,
+    _railing_bounds,
     _to_unbounded,
     _weight_stratified_split,
+    _weighted_quantile,
     _weighted_standardiser,
     train_maf_emulator,
 )
@@ -40,6 +42,28 @@ class TestBijector:
         assert x[:, 0].min() > 0 and x[:, 0].max() < 100   # two-sided
         assert x[:, 1].min() > 0                            # lower bound
         assert x[:, 2].max() < 1                            # upper bound
+
+
+class TestSelectiveRailing:
+    def test_weighted_quantile_matches_unweighted_median(self):
+        x = np.linspace(0, 10, 1001)
+        w = np.ones_like(x)
+        assert _weighted_quantile(x, w, 0.5) == pytest.approx(5.0, abs=0.05)
+
+    def test_only_railing_side_is_kept(self):
+        rng = np.random.default_rng(0)
+        # col 0 rails against lower wall 0 (exponential pile-up), col 1 sits in the
+        # interior of [0, 100] far from either wall.
+        rail = rng.exponential(0.3, size=20000)
+        interior = 50 + rng.normal(0, 3, size=20000)
+        theta = np.column_stack([rail, interior])
+        w = np.full(len(theta), 1.0 / len(theta))
+        bounds = np.array([[0.0, 5.0], [0.0, 100.0]])
+        eff, railing = _railing_bounds(theta, w, bounds, margin_sigma=1.0)
+        assert railing == [0]                       # only col 0 flagged
+        assert np.isfinite(eff[0, 0]) and eff[0, 0] == 0.0   # lower wall kept
+        assert not np.isfinite(eff[0, 1])           # far upper wall dropped
+        assert not np.isfinite(eff[1]).any()        # interior column untouched
 
 
 class _FakeSamples:

@@ -139,6 +139,49 @@ def _from_unbounded(y, bounds):
     return theta
 
 
+def _weighted_quantile(x, w, q):
+    """Weighted quantile of a 1D array (linear interpolation on the CDF)."""
+    order = np.argsort(x)
+    x, cw = x[order], np.cumsum(w[order])
+    cw = (cw - 0.5 * w[order]) / cw[-1]          # midpoint CDF (Hazen)
+    return np.interp(q, cw, x)
+
+
+def _railing_bounds(theta, w, bounds, margin_sigma=1.0):
+    """Keep a prior wall only where the posterior actually piles against it.
+
+    A blanket bijector helps the one parameter railing against a wall (wa, mnu)
+    but needlessly warps interior, near-Gaussian marginals and the shared flow
+    then fits them worse. So for each side of each parameter we keep the finite
+    bound only if the posterior's 1st/99th weighted percentile sits within
+    ``margin_sigma`` weighted standard deviations of it; otherwise that side is
+    set to +/- inf, so :func:`_to_unbounded` leaves it (or its whole column)
+    untouched. Returns the masked bounds and the list of railing parameter names
+    (by column index) for transparency.
+    """
+    theta = np.asarray(theta, dtype=np.float64)
+    bounds = np.asarray(bounds, dtype=np.float64)
+    eff = np.full_like(bounds, np.inf)
+    eff[:, 0] = -np.inf
+    railing = []
+    for i in range(theta.shape[1]):
+        lo, hi = bounds[i, 0], bounds[i, 1]
+        col = theta[:, i]
+        mu = np.average(col, weights=w)
+        sig = np.sqrt(np.average((col - mu) ** 2, weights=w))
+        tol = margin_sigma * sig
+        rails = False
+        if np.isfinite(lo) and (_weighted_quantile(col, w, 0.01) - lo) < tol:
+            eff[i, 0] = lo
+            rails = True
+        if np.isfinite(hi) and (hi - _weighted_quantile(col, w, 0.99)) < tol:
+            eff[i, 1] = hi
+            rails = True
+        if rails:
+            railing.append(i)
+    return eff, railing
+
+
 def train_maf_emulator(
     samples,
     parameters=None,
@@ -217,12 +260,17 @@ def train_maf_emulator(
         Per-parameter prior limits ``(lower, upper)`` (use ``+/-inf`` for an
         unbounded side). Passed to certification for the out-of-bounds gate, and
         required for ``bijector``.
-    bijector : bool
-        If true (and ``bounds`` given), map each bounded parameter to the whole real
-        line before training (logit for two-sided, log for one-sided) so hard prior
-        walls become smooth tails the flow can capture without rounding or leaking.
-        The trained flow lives in the transformed+standardised space; sampling and
-        certification invert the transform, so out-of-bounds mass is exactly zero.
+    bijector : bool or str or sequence of str
+        Map bounded parameters to the whole real line before training (logit for
+        two-sided, log for one-sided) so hard prior walls become smooth tails the
+        flow can capture without rounding or leaking. The trained flow lives in the
+        transformed+standardised space; sampling and certification invert the
+        transform, so out-of-bounds mass is exactly zero. Requires ``bounds``.
+        Modes: ``False`` off; ``True``/``"all"`` transform every finite bound;
+        ``"auto"`` transform only the walls the posterior actually rails against
+        (recommended -- a blanket transform warps interior marginals and hurts
+        them); a list of parameter names transforms exactly those. The parameters
+        (or wall sides) actually transformed are returned under ``railing_params``.
     certify_samples : int
         Number of flow draws used for certification.
     report : callable, optional
@@ -286,8 +334,28 @@ def train_maf_emulator(
     # Optional bijector: map bounded parameters to R so the flow works in an
     # unconstrained space (hard walls become smooth tails). theta stays in physical
     # units (the certification target); theta_t is what the flow actually sees.
+    # bijector may be False (off), True/"all" (every finite bound), "auto"
+    # (only walls the posterior actually rails against), or a list of parameter
+    # names to transform. A blanket transform warps interior marginals and hurts
+    # them, so "auto"/list keep the flow physical away from live walls.
     use_bijector = bool(bijector) and bounds is not None
-    bnds = np.asarray(bounds, dtype=np.float64) if use_bijector else None
+    bnds = None
+    railing_params = None
+    if use_bijector:
+        bnds = np.asarray(bounds, dtype=np.float64).copy()
+        if bijector == "auto":
+            bnds, rail_idx = _railing_bounds(theta, w, bnds)
+            railing_params = [parameters[i] for i in rail_idx]
+        elif isinstance(bijector, (list, tuple, set)):
+            keep = {str(p) for p in bijector}
+            for i, name in enumerate(parameters):
+                if name not in keep:
+                    bnds[i] = [-np.inf, np.inf]
+            railing_params = [p for p in parameters if p in keep]
+        else:  # True / "all"
+            railing_params = [parameters[i] for i in range(d)
+                              if np.isfinite(bnds[i]).any()]
+        use_bijector = bool(np.isfinite(bnds).any())
     theta_t = _to_unbounded(theta, bnds) if use_bijector else theta
 
     # Weight-stratified train / early-stop-val / held-out-test split. The test set
@@ -394,4 +462,5 @@ def train_maf_emulator(
         "certification": certification,
         "bijector": use_bijector,
         "bounds": (bnds if use_bijector else None),
+        "railing_params": railing_params,
     }
