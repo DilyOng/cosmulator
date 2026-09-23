@@ -36,6 +36,21 @@ from cosmulator.parameters import cosmological_parameters
 _ARCH_KEYS = ("flow_layers", "nn_width", "nn_depth", "spline")
 
 
+def _member_healthy(gen, ref_std, std_factor=5.0):
+    """True if a member's draws are finite and reasonably scaled vs the reference.
+
+    A divergent MAF member emits non-finite or extreme draws; a healthy one has
+    every parameter's sample std within a factor ``std_factor`` of the reference
+    posterior's std.
+    """
+    gen = np.asarray(gen, dtype=np.float64)
+    if not np.isfinite(gen).all():
+        return False
+    s = gen.std(axis=0)
+    ref_std = np.asarray(ref_std, dtype=np.float64)
+    return bool(np.all(s < std_factor * ref_std) and np.all(s > ref_std / std_factor))
+
+
 def _build_flow_template(key, d, arch):
     """A zero-content flow of the right architecture to deserialise leaves into."""
     import jax.numpy as jnp
@@ -196,6 +211,40 @@ class EnsembleEmulator:
         theta = self.sample(n, seed=seed)
         log_q = self.log_prob(theta)
         return float(np.mean(log_q) + log_V)
+
+    def drop_divergent(self, samples, weights=None, n=20000, std_factor=5.0,
+                       seed=0):
+        """Remove members whose draws are non-finite or wildly mis-scaled.
+
+        MAF sampling is an autoregressive inverse and can occasionally land a
+        member in a numerically unstable state that emits extreme draws (a single
+        such member wrecks the pooled std-based width and pushes samples out of
+        bounds, even though most members are fine). A member is dropped if any draw
+        is non-finite, or if any parameter's sample standard deviation is more than
+        ``std_factor`` times, or less than ``1/std_factor`` times, the reference
+        posterior's -- a scale sanity check that a healthy flow always passes.
+
+        Returns ``(kept, dropped)`` counts; mutates the ensemble in place.
+        """
+        import jax
+
+        theta = np.asarray(samples[self.parameters].to_numpy(), dtype=np.float64)
+        if weights is None:
+            weights = np.asarray(samples.get_weights(), dtype=np.float64)
+        w = weights / weights.sum()
+        mu = w @ theta
+        ref_std = np.sqrt(w @ (theta - mu) ** 2)
+
+        key = jax.random.key(seed)
+        keep = []
+        for m in self.members:
+            key, sk = jax.random.split(key)
+            g = np.asarray(m.sample(sk, n))
+            if _member_healthy(g, ref_std, std_factor):
+                keep.append(m)
+        dropped = len(self.members) - len(keep)
+        self.members = keep
+        return len(keep), dropped
 
     def knn_kl(self, samples, weights=None, k=5, n_true=20000, n_emu=20000, seed=0):
         """k-NN KL divergence between the true samples and the emulator's samples.

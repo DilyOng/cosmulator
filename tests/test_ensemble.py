@@ -7,7 +7,31 @@ equal-weight bookkeeping.
 import numpy as np
 import pytest
 
-from cosmulator.ensemble import EnsembleEmulator
+from cosmulator.ensemble import EnsembleEmulator, _member_healthy
+
+
+class TestMemberHealth:
+    REF = np.array([2.0, 0.5, 20.0])
+
+    def test_accepts_well_scaled_finite_member(self):
+        rng = np.random.default_rng(0)
+        g = rng.normal(size=(5000, 3)) * self.REF
+        assert _member_healthy(g, self.REF)
+
+    def test_rejects_nonfinite(self):
+        g = np.ones((100, 3))
+        g[0, 0] = np.inf
+        assert not _member_healthy(g, self.REF)
+
+    def test_rejects_blown_up_scale(self):
+        rng = np.random.default_rng(1)
+        g = rng.normal(size=(5000, 3)) * self.REF
+        g[:, 2] *= 100.0                       # one parameter diverges
+        assert not _member_healthy(g, self.REF, std_factor=5.0)
+
+    def test_rejects_collapsed_scale(self):
+        g = np.zeros((5000, 3)) + [2.0, 0.5, 20.0]   # zero spread
+        assert not _member_healthy(g, self.REF)
 
 
 def _empty(bounds=None):
