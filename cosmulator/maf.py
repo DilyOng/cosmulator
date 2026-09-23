@@ -327,6 +327,12 @@ def train_maf_emulator(
     """
     import equinox as eqx
     import jax
+    # float64 end-to-end: a MAF's sampling is an autoregressive inverse whose
+    # repeated exp(log-scale) compositions are numerically unstable in float32
+    # (JAX's default), occasionally emitting non-finite or astronomical draws that
+    # a single ensemble member then contaminates the pool with. x64 conditions the
+    # inverse properly and removes that failure mode at the source.
+    jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
     import optax
     from flowjax.bijections import RationalQuadraticSpline

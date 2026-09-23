@@ -36,19 +36,45 @@ from cosmulator.parameters import cosmological_parameters
 _ARCH_KEYS = ("flow_layers", "nn_width", "nn_depth", "spline")
 
 
-def _member_healthy(gen, ref_std, std_factor=5.0):
-    """True if a member's draws are finite and reasonably scaled vs the reference.
+def _enable_x64():
+    import jax
+    jax.config.update("jax_enable_x64", True)
 
-    A divergent MAF member emits non-finite or extreme draws; a healthy one has
-    every parameter's sample std within a factor ``std_factor`` of the reference
-    posterior's std.
+
+def _member_valid(gen, bounds, expand=100.0, oob_frac_max=0.5):
+    """True if a member's draws are numerically valid -- a TRUTH-INDEPENDENT gate.
+
+    A run is rejected only for failing to instantiate a usable model, never for
+    disagreeing with the target posterior (which would leak the answer into the
+    certification). The criteria use only a-priori information -- finiteness and
+    the known prior box:
+
+    * any non-finite draw -> invalid;
+    * any draw beyond the prior box expanded by ``expand`` box-widths (a gross
+      blow-up, e.g. 1e10 on a parameter bounded at 0.1) -> invalid;
+    * more than ``oob_frac_max`` of draws outside the prior box -> invalid.
+
+    The thresholds are deliberately loose: a healthy flow (trained in physical
+    space without hard walls) may leak a little mass just past a wall, which is
+    fine; only a numerically failed sampler trips this gate. ``bounds`` is the
+    prior box ``(d, 2)`` with ``+/-inf`` for unbounded sides.
     """
     gen = np.asarray(gen, dtype=np.float64)
     if not np.isfinite(gen).all():
         return False
-    s = gen.std(axis=0)
-    ref_std = np.asarray(ref_std, dtype=np.float64)
-    return bool(np.all(s < std_factor * ref_std) and np.all(s > ref_std / std_factor))
+    bounds = np.asarray(bounds, dtype=np.float64)
+    lo, hi = bounds[:, 0], bounds[:, 1]
+    fin = np.isfinite(lo) & np.isfinite(hi)
+    if fin.any():
+        j = np.where(fin)[0]
+        width = hi[j] - lo[j]
+        g = gen[:, j]
+        if np.any(g < lo[j] - expand * width) or np.any(g > hi[j] + expand * width):
+            return False
+        oob = (g < lo[j]) | (g > hi[j])
+        if oob.any(axis=1).mean() > oob_frac_max:
+            return False
+    return True
 
 
 def _build_flow_template(key, d, arch):
@@ -118,6 +144,7 @@ class EnsembleEmulator:
         self.parameters = list(parameters)
         self.arch = dict(arch)
         self.bounds = None if bounds is None else np.asarray(bounds, dtype=np.float64)
+        self.invalid_runs = 0
 
     @property
     def K(self):
@@ -126,35 +153,60 @@ class EnsembleEmulator:
     # ------------------------------------------------------------------ build
     @classmethod
     def train(cls, samples, parameters=None, K=8, seeds=None, bounds=None,
-              report=None, **train_kwargs):
-        """Train ``K`` independently seeded members (plain baseline by default).
+              max_retries=None, report=None, **train_kwargs):
+        """Train ``K`` validity-screened members from a fixed recipe.
 
-        ``train_kwargs`` are passed to :func:`cosmulator.maf.train_maf_emulator`
-        (e.g. ``flow_layers``, ``nn_width``, ``learning_rate``, ``whiten``); each
-        member is trained with ``certify=False`` and a distinct seed.
+        Each member is trained with ``certify=False`` and a distinct seed. When
+        ``bounds`` are given, every trained member is checked by the
+        truth-independent :func:`_member_valid` gate (finiteness + prior box); an
+        invalid run (a numerically failed MAF sampler) is discarded and replaced by
+        a fresh seed, so the ensemble is ``K`` valid members BY CONSTRUCTION rather
+        than by post-hoc pruning against the target. The number of invalid runs is
+        recorded as ``self.invalid_runs`` (report it -- it is part of the honest
+        methodology). ``train_kwargs`` pass through to
+        :func:`cosmulator.maf.train_maf_emulator`.
         """
         from cosmulator.maf import train_maf_emulator
 
         if parameters is None:
             parameters = cosmological_parameters(samples)
         parameters = list(parameters)
-        seeds = list(range(K)) if seeds is None else list(seeds)
+        base_seeds = list(range(K)) if seeds is None else list(seeds)
+        if max_retries is None:
+            max_retries = 2 * K
+        # a seed pool: the K requested seeds, then extras to replace invalid runs
+        pool = base_seeds + list(range(max(base_seeds) + 1,
+                                       max(base_seeds) + 1 + max_retries))
         arch = {k: train_kwargs.get(k) for k in _ARCH_KEYS if k in train_kwargs}
-        members = []
-        for s in seeds:
+        bnds = None if bounds is None else np.asarray(bounds, dtype=np.float64)
+
+        members, invalid = [], 0
+        for s in pool:
+            if len(members) >= K:
+                break
             out = train_maf_emulator(samples, parameters=parameters, seed=s,
                                      certify=False, bounds=bounds, **train_kwargs)
-            members.append(_Member(out["flow"], out["mean"], out["std"],
-                                   out.get("whiten_L")))
+            m = _Member(out["flow"], out["mean"], out["std"], out.get("whiten_L"))
+            ok = True
+            if bnds is not None:
+                import jax
+                g = np.asarray(m.sample(jax.random.key(90000 + s), 20000))
+                ok = _member_valid(g, bnds)
+            if ok:
+                members.append(m)
+            else:
+                invalid += 1
             if report is not None:
-                report(s, out["best_val_nll"])
-        return cls(members, parameters, arch, bounds=bounds)
+                report(s, out["best_val_nll"], ok)
+        ens = cls(members, parameters, arch, bounds=bounds)
+        ens.invalid_runs = invalid
+        return ens
 
     # ----------------------------------------------------------------- density
     def sample(self, n, seed=0):
         """Draw ``n`` samples from the mixture (pick a member uniformly, then draw)."""
+        _enable_x64()
         import jax
-        import jax.numpy as jnp
 
         key = jax.random.key(seed)
         counts = np.random.default_rng(seed).multinomial(
@@ -169,6 +221,7 @@ class EnsembleEmulator:
 
     def log_prob(self, theta):
         """Exact mixture log-density ``logsumexp_k(log q_k) - log K`` in physical space."""
+        _enable_x64()
         import jax.numpy as jnp
         from jax.scipy.special import logsumexp
 
@@ -212,35 +265,27 @@ class EnsembleEmulator:
         log_q = self.log_prob(theta)
         return float(np.mean(log_q) + log_V)
 
-    def drop_divergent(self, samples, weights=None, n=20000, std_factor=5.0,
-                       seed=0):
-        """Remove members whose draws are non-finite or wildly mis-scaled.
+    def drop_invalid(self, bounds=None, n=20000, seed=0):
+        """Post-hoc safety net: drop numerically invalid members (truth-independent).
 
-        MAF sampling is an autoregressive inverse and can occasionally land a
-        member in a numerically unstable state that emits extreme draws (a single
-        such member wrecks the pooled std-based width and pushes samples out of
-        bounds, even though most members are fine). A member is dropped if any draw
-        is non-finite, or if any parameter's sample standard deviation is more than
-        ``std_factor`` times, or less than ``1/std_factor`` times, the reference
-        posterior's -- a scale sanity check that a healthy flow always passes.
-
-        Returns ``(kept, dropped)`` counts; mutates the ensemble in place.
+        Applies the same a-priori :func:`_member_valid` gate as training (finiteness
+        + prior box), so it never references the target posterior. Prefer building a
+        valid ensemble at train time (:meth:`train` retries invalid seeds); this is
+        for cleaning ensembles saved before that existed. Returns ``(kept, dropped)``
+        and mutates in place.
         """
+        _enable_x64()
         import jax
 
-        theta = np.asarray(samples[self.parameters].to_numpy(), dtype=np.float64)
-        if weights is None:
-            weights = np.asarray(samples.get_weights(), dtype=np.float64)
-        w = weights / weights.sum()
-        mu = w @ theta
-        ref_std = np.sqrt(w @ (theta - mu) ** 2)
-
+        bounds = self.bounds if bounds is None else np.asarray(bounds, dtype=np.float64)
+        if bounds is None:
+            raise ValueError("drop_invalid needs the prior box `bounds` (d, 2).")
         key = jax.random.key(seed)
         keep = []
         for m in self.members:
             key, sk = jax.random.split(key)
             g = np.asarray(m.sample(sk, n))
-            if _member_healthy(g, ref_std, std_factor):
+            if _member_valid(g, bounds):
                 keep.append(m)
         dropped = len(self.members) - len(keep)
         self.members = keep
@@ -288,6 +333,7 @@ class EnsembleEmulator:
     @classmethod
     def load(cls, directory):
         """Load an ensemble saved by :meth:`save`."""
+        _enable_x64()                       # members are trained/saved in float64
         import equinox as eqx
         import jax
 
