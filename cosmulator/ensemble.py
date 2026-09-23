@@ -190,7 +190,9 @@ class EnsembleEmulator:
             ok = True
             if bnds is not None:
                 import jax
-                g = np.asarray(m.sample(jax.random.key(90000 + s), 20000))
+                # 50k probes the ~4.6-sigma tails where affine-inverse blow-ups
+                # live; 20k was too small to catch the stochastic failures.
+                g = np.asarray(m.sample(jax.random.key(90000 + s), 50000))
                 ok = _member_valid(g, bnds)
             if ok:
                 members.append(m)

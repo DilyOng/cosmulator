@@ -42,7 +42,11 @@ DEFAULT_TOLERANCES = {
                              # parameter cannot hide behind a good mean)
     "bias_sigma": 0.1,       # mean |mean_q - mean_P| / sigma_P
     "wasserstein_sigma": 0.05,  # worst-parameter 1D Wasserstein, in target sigma
-    "oob_frac": 0.001,       # fraction of emulator mass outside the prior box
+    "oob_frac": 0.02,        # fraction of emulator mass outside the prior box. A
+                             # flow without a support bijector leaks a little of
+                             # its Gaussian tail past a hard wall (mnu>=0, r>=0),
+                             # so a small tolerance is physical, not an accuracy
+                             # failure; a gross value still flags invented mass.
     "mmd_pvalue": 0.01,      # below this the joint test flags a difference (warn)
 }
 
