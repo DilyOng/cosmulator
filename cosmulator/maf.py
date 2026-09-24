@@ -201,6 +201,7 @@ def train_maf_emulator(
     flow_layers=8,
     nn_width=50,
     nn_depth=2,
+    nn_activation="relu",
     learning_rate=1e-3,
     batch_size=1024,
     epochs=1500,
@@ -231,6 +232,11 @@ def train_maf_emulator(
         Number of autoregressive layers in the flow.
     nn_width, nn_depth : int
         Width and depth of the conditioner network in each layer.
+    nn_activation : str or callable
+        Conditioner-network activation. One of ``"relu"``, ``"tanh"``,
+        ``"silu"`` (swish) or ``"gelu"`` (resolved against :mod:`jax.nn`), or a
+        callable passed straight through. Defaults to ``"relu"`` (the flowjax
+        default), so existing configurations are unchanged.
     learning_rate : float
         Adam step size (with global-norm gradient clipping at 1.0).
     batch_size : int
@@ -419,9 +425,14 @@ def train_maf_emulator(
     key = jax.random.key(seed)
     key, fkey = jax.random.split(key)
     transformer = RationalQuadraticSpline(knots=8, interval=4.0) if spline else None
+    _activations = {"relu": jax.nn.relu, "tanh": jax.nn.tanh,
+                    "silu": jax.nn.silu, "gelu": jax.nn.gelu}
+    activation = (_activations[nn_activation] if isinstance(nn_activation, str)
+                  else nn_activation)
     flow = masked_autoregressive_flow(
         fkey, base_dist=Normal(jnp.zeros(d)), transformer=transformer,
         flow_layers=flow_layers, nn_width=nn_width, nn_depth=nn_depth,
+        nn_activation=activation,
     )
 
     opt = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(learning_rate))

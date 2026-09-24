@@ -17,7 +17,7 @@ optuna is imported lazily; this module needs the ``[train]`` and ``[hpo]`` extra
 # A known-good starting point (the untuned config that already reached ~1% width),
 # enqueued as the first trial so the search begins from a sensible place.
 DEFAULT_WARM_START = {
-    "flow_layers": 8, "nn_width": 50, "nn_depth": 2,
+    "flow_layers": 8, "nn_width": 50, "nn_depth": 2, "nn_activation": "relu",
     "learning_rate": 1e-3, "batch_size": 1024, "spline": False,
 }
 
@@ -34,13 +34,16 @@ def suggest_hyperparameters(trial):
     -------
     dict
         Keyword arguments for :func:`cosmulator.maf.train_maf_emulator`. The
-        space covers flow depth and width, the conditioner depth, the learning
-        rate, the batch size, and whether to use spline (NSF) transformers.
+        space covers flow depth and width, the conditioner depth and activation
+        ({relu, tanh, silu, gelu}), the learning rate, the batch size, and
+        whether to use spline (NSF) transformers.
     """
     return {
         "flow_layers": trial.suggest_int("flow_layers", 4, 16),
         "nn_width": trial.suggest_int("nn_width", 32, 256, log=True),
         "nn_depth": trial.suggest_int("nn_depth", 1, 4),
+        "nn_activation": trial.suggest_categorical(
+            "nn_activation", ["relu", "tanh", "silu", "gelu"]),
         "learning_rate": trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True),
         "batch_size": trial.suggest_categorical("batch_size", [256, 512, 1024, 2048]),
         "spline": trial.suggest_categorical("spline", [False, True]),
