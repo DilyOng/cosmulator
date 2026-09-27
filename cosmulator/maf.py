@@ -203,6 +203,7 @@ def train_maf_emulator(
     nn_depth=2,
     nn_activation="relu",
     learning_rate=1e-3,
+    weight_decay=0.0,
     batch_size=1024,
     epochs=1500,
     patience=150,
@@ -238,7 +239,10 @@ def train_maf_emulator(
         callable passed straight through. Defaults to ``"relu"`` (the flowjax
         default), so existing configurations are unchanged.
     learning_rate : float
-        Adam step size (with global-norm gradient clipping at 1.0).
+        AdamW step size (with global-norm gradient clipping at 1.0).
+    weight_decay : float
+        Decoupled L2 weight decay for AdamW. ``0.0`` (the default) reduces AdamW
+        to plain Adam, so existing behaviour is unchanged.
     batch_size : int
         Minibatch size, capped at the number of training samples.
     epochs : int
@@ -435,7 +439,8 @@ def train_maf_emulator(
         nn_activation=activation,
     )
 
-    opt = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(learning_rate))
+    opt = optax.chain(optax.clip_by_global_norm(1.0),
+                      optax.adamw(learning_rate, weight_decay=weight_decay))
     opt_state = opt.init(eqx.filter(flow, eqx.is_inexact_array))
 
     def weighted_nll(fl, x, wt):

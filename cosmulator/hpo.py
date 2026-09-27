@@ -19,6 +19,7 @@ optuna is imported lazily; this module needs the ``[train]`` and ``[hpo]`` extra
 DEFAULT_WARM_START = {
     "flow_layers": 8, "nn_width": 50, "nn_depth": 2, "nn_activation": "relu",
     "learning_rate": 1e-3, "batch_size": 1024, "spline": False,
+    "weight_decay": 1e-6,   # ~= no decay, so the warm start matches the old Adam config
 }
 
 
@@ -45,6 +46,7 @@ def suggest_hyperparameters(trial):
         "nn_activation": trial.suggest_categorical(
             "nn_activation", ["relu", "tanh", "silu", "gelu"]),
         "learning_rate": trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True),
+        "weight_decay": trial.suggest_float("weight_decay", 1e-6, 3e-4, log=True),
         "batch_size": trial.suggest_categorical("batch_size", [256, 512, 1024, 2048]),
         "spline": trial.suggest_categorical("spline", [False, True]),
     }
@@ -57,6 +59,7 @@ def tune(
     parameters=None,
     epochs=1500,
     patience=150,
+    whiten=False,
     prune=True,
     warm_start=DEFAULT_WARM_START,
     storage=None,
@@ -79,9 +82,12 @@ def tune(
         Parameters to train on; defaults to the sampled cosmological parameters.
     epochs, patience : int
         Passed to the trainer (max epochs and early-stopping patience).
+    whiten : bool
+        Forwarded to the trainer so every trial trains the same (whitened)
+        pipeline that is deployed, keeping HPO and deployment consistent.
     prune : bool
-        If true, stream per-epoch validation NLL to a ``MedianPruner`` and abort
-        trials that track worse than the median at the same epoch.
+        If true, stream per-epoch validation NLL to the pruner and abort trials
+        that track worse than their peers at the same epoch.
     warm_start : dict or None
         A configuration enqueued as the first trial. Defaults to
         :data:`DEFAULT_WARM_START`; pass ``None`` to disable, or another study's
@@ -135,7 +141,7 @@ def tune(
                     raise optuna.exceptions.TrialPruned()
         result = train_maf_emulator(
             samples, parameters=parameters, epochs=epochs, patience=patience,
-            seed=train_seed, report=reporter, certify=False, **hp,
+            whiten=whiten, seed=train_seed, report=reporter, certify=False, **hp,
         )
         return result["best_val_nll"]
 
@@ -158,7 +164,9 @@ def tune(
         direction="minimize", sampler=sampler, pruner=pruner,
         storage=storage, study_name=study_name, load_if_exists=True,
     )
-    if warm_start is not None:
+    # Enqueue the warm start only on a fresh study; on a resumed study the history
+    # already carries it, so re-enqueuing would waste a trial re-running it.
+    if warm_start is not None and len(study.get_trials(deepcopy=False)) == 0:
         study.enqueue_trial(warm_start)
     study.optimize(objective, n_trials=n_trials)
     return study
