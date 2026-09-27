@@ -63,8 +63,9 @@ def tune(
     study_name=None,
     sampler_seed=42,
     train_seed=0,
-    random_startup_trials=5,
-    prune_warmup_epochs=200,
+    random_startup_trials=12,
+    min_resource=150,
+    reduction_factor=3,
 ):
     """Run an Optuna study tuning a MAF emulator on one posterior.
 
@@ -96,12 +97,16 @@ def tune(
         Fixed seed for every trial's training, so trials differ only in their
         hyperparameters (a fair comparison).
     random_startup_trials : int
-        Random trials before TPE modelling engages, and completed trials before
-        pruning activates -- a safeguard against a bad warm-start locking the
-        search into a poor region.
-    prune_warmup_epochs : int
-        Epochs within a trial before it may be pruned, so a slow starter is not
-        killed prematurely.
+        Random trials before the (multivariate) TPE modelling engages -- large
+        enough that the joint density is not fit to a few noisy early trials, a
+        real risk with a wide search and a small trial budget.
+    min_resource : int
+        Epochs a trial is guaranteed before Hyperband may prune it. Set to the
+        early-stopping patience so no trial is culled before it has had a fair
+        chance, given the noisy (~2-3%) validation NLL.
+    reduction_factor : int
+        Hyperband successive-halving factor: each rung keeps the top
+        ``1 / reduction_factor`` of trials.
 
     Returns
     -------
@@ -134,11 +139,19 @@ def tune(
         )
         return result["best_val_nll"]
 
+    # Multivariate TPE models the JOINT hyperparameter density, so it captures
+    # interactions (flow_layers x nn_width x nn_depth total capacity, lr x
+    # batch_size, ...) that independent TPE ignores -- worth it for this wide
+    # search. group=True also handles conditional parameters correctly.
     sampler = optuna.samplers.TPESampler(
-        n_startup_trials=random_startup_trials, seed=sampler_seed)
+        n_startup_trials=random_startup_trials, seed=sampler_seed,
+        multivariate=True, group=True)
+    # Conservative Hyperband: budget-aware successive halving, but min_resource is
+    # the patience so slow-but-good flow trainings are not pruned on early noise.
     pruner = (
-        optuna.pruners.MedianPruner(
-            n_startup_trials=random_startup_trials, n_warmup_steps=prune_warmup_epochs)
+        optuna.pruners.HyperbandPruner(
+            min_resource=min_resource, max_resource=epochs,
+            reduction_factor=reduction_factor)
         if prune else optuna.pruners.NopPruner()
     )
     study = optuna.study.create_study(
