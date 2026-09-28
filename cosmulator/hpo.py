@@ -23,7 +23,7 @@ DEFAULT_WARM_START = {
     "nn_activation": "relu",
     "learning_rate": 1e-3,
     "batch_size": 1024,
-    "spline": False,
+    "spline": True,
     "weight_decay": 1e-6,  # ~= no decay, so the warm start matches the old Adam config
 }
 
@@ -54,7 +54,12 @@ def suggest_hyperparameters(trial):
         "learning_rate": trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True),
         "weight_decay": trial.suggest_float("weight_decay", 1e-6, 3e-4, log=True),
         "batch_size": trial.suggest_categorical("batch_size", [256, 512, 1024, 2048]),
-        "spline": trial.suggest_categorical("spline", [False, True]),
+        # Transformer is PINNED to the spline: affine (spline=False) fits the
+        # validation NLL marginally better but its exponential scale blows up in
+        # inverse sampling, and the truth-independent objective cannot see that.
+        # A single-choice categorical keeps spline=True in best_params so the
+        # deployed ensemble uses it too.
+        "spline": trial.suggest_categorical("spline", [True]),
     }
 
 
