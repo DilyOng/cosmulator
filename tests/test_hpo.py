@@ -36,20 +36,19 @@ def test_module_imports_without_optuna():
 
 
 class TestSearchSpace:
+    EXPECTED = {
+        "flow_layers", "nn_width", "nn_depth", "nn_activation",
+        "learning_rate", "weight_decay", "batch_size", "spline",
+    }
+
     def test_returns_trainer_kwargs(self):
         hp = suggest_hyperparameters(_FakeTrial())
-        assert set(hp) == {
-            "flow_layers", "nn_width", "nn_depth",
-            "learning_rate", "batch_size", "spline",
-        }
+        assert set(hp) == self.EXPECTED
 
     def test_all_parameters_are_suggested(self):
         trial = _FakeTrial()
         suggest_hyperparameters(trial)
-        assert set(trial.asked) == {
-            "flow_layers", "nn_width", "nn_depth",
-            "learning_rate", "batch_size", "spline",
-        }
+        assert set(trial.asked) == self.EXPECTED
 
     def test_suggested_values_are_in_range(self):
         hp = suggest_hyperparameters(_FakeTrial())
