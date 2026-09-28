@@ -53,7 +53,14 @@ class TestCosmologicalParameters:
         # walcdm: base + w0 + wa, given in a scrambled column order.
         cols = ["wa", "H0", "w0", "logA", "tau", "ns", "ombh2", "omch2", "As"]
         assert cosmological_parameters(cols) == [
-            "logA", "ns", "H0", "ombh2", "omch2", "tau", "w0", "wa",
+            "logA",
+            "ns",
+            "H0",
+            "ombh2",
+            "omch2",
+            "tau",
+            "w0",
+            "wa",
         ]
 
     def test_derived_and_nuisance_columns_are_excluded(self):

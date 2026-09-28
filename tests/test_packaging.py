@@ -21,8 +21,7 @@ IMPORT_TO_DISTRIBUTION = {"yaml": "pyyaml"}
 #: Modules supplied by an optional extra rather than the core dependencies.
 #: Anything listed here must be imported lazily, inside a function, so that
 #: importing cosmulator never requires the training stack.
-OPTIONAL_IMPORTS = {"margarine", "jax", "flax", "optax",
-                    "flowjax", "equinox", "optuna"}
+OPTIONAL_IMPORTS = {"margarine", "jax", "flax", "optax", "flowjax", "equinox", "optuna"}
 
 
 def _module_paths():

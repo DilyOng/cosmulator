@@ -23,13 +23,22 @@ This module operates on column names alone and needs neither JAX nor margarine.
 # by omission: the selection is the intersection of this list with a chain's
 # columns, so a parameter absent here is never trained on.
 COSMO_SAMPLED = [
-    "logA", "ns", "H0", "ombh2", "omch2", "tau",   # base LCDM
-    "w", "w0", "wa",                                # dark energy
-    "mnu", "nnu", "meffsterile",                    # neutrinos
-    "omk",                                          # curvature
-    "r",                                            # tensors
-    "nrun",                                         # running
-    "Alens",                                        # lensing amplitude
+    "logA",
+    "ns",
+    "H0",
+    "ombh2",
+    "omch2",
+    "tau",  # base LCDM
+    "w",
+    "w0",
+    "wa",  # dark energy
+    "mnu",
+    "nnu",
+    "meffsterile",  # neutrinos
+    "omk",  # curvature
+    "r",  # tensors
+    "nrun",  # running
+    "Alens",  # lensing amplitude
 ]
 
 # The six parameters present in every grid model. Their absence signals a naming
@@ -64,7 +73,7 @@ def parameter_names(samples):
 
 
 def cosmological_parameters(samples):
-    """The sampled cosmological parameters present in a chain, in canonical order.
+    """Return the sampled cosmological parameters in a chain, in canonical order.
 
     Parameters
     ----------

@@ -17,9 +17,14 @@ optuna is imported lazily; this module needs the ``[train]`` and ``[hpo]`` extra
 # A known-good starting point (the untuned config that already reached ~1% width),
 # enqueued as the first trial so the search begins from a sensible place.
 DEFAULT_WARM_START = {
-    "flow_layers": 8, "nn_width": 50, "nn_depth": 2, "nn_activation": "relu",
-    "learning_rate": 1e-3, "batch_size": 1024, "spline": False,
-    "weight_decay": 1e-6,   # ~= no decay, so the warm start matches the old Adam config
+    "flow_layers": 8,
+    "nn_width": 50,
+    "nn_depth": 2,
+    "nn_activation": "relu",
+    "learning_rate": 1e-3,
+    "batch_size": 1024,
+    "spline": False,
+    "weight_decay": 1e-6,  # ~= no decay, so the warm start matches the old Adam config
 }
 
 
@@ -44,7 +49,8 @@ def suggest_hyperparameters(trial):
         "nn_width": trial.suggest_int("nn_width", 32, 256, log=True),
         "nn_depth": trial.suggest_int("nn_depth", 1, 4),
         "nn_activation": trial.suggest_categorical(
-            "nn_activation", ["relu", "tanh", "silu", "gelu"]),
+            "nn_activation", ["relu", "tanh", "silu", "gelu"]
+        ),
         "learning_rate": trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True),
         "weight_decay": trial.suggest_float("weight_decay", 1e-6, 3e-4, log=True),
         "batch_size": trial.suggest_categorical("batch_size", [256, 512, 1024, 2048]),
@@ -133,15 +139,22 @@ def tune(
 
     def objective(trial):
         hp = suggest_hyperparameters(trial)
-        reporter = None
-        if prune:
-            def reporter(epoch, val_nll):
-                trial.report(val_nll, epoch)
-                if trial.should_prune():
-                    raise optuna.exceptions.TrialPruned()
+
+        def reporter(epoch, val_nll):
+            trial.report(val_nll, epoch)
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
+
         result = train_maf_emulator(
-            samples, parameters=parameters, epochs=epochs, patience=patience,
-            whiten=whiten, seed=train_seed, report=reporter, certify=False, **hp,
+            samples,
+            parameters=parameters,
+            epochs=epochs,
+            patience=patience,
+            whiten=whiten,
+            seed=train_seed,
+            report=reporter,
+            certify=False,
+            **hp,
         )
         return result["best_val_nll"]
 
@@ -150,19 +163,29 @@ def tune(
     # batch_size, ...) that independent TPE ignores -- worth it for this wide
     # search. group=True also handles conditional parameters correctly.
     sampler = optuna.samplers.TPESampler(
-        n_startup_trials=random_startup_trials, seed=sampler_seed,
-        multivariate=True, group=True)
+        n_startup_trials=random_startup_trials,
+        seed=sampler_seed,
+        multivariate=True,
+        group=True,
+    )
     # Conservative Hyperband: budget-aware successive halving, but min_resource is
     # the patience so slow-but-good flow trainings are not pruned on early noise.
     pruner = (
         optuna.pruners.HyperbandPruner(
-            min_resource=min_resource, max_resource=epochs,
-            reduction_factor=reduction_factor)
-        if prune else optuna.pruners.NopPruner()
+            min_resource=min_resource,
+            max_resource=epochs,
+            reduction_factor=reduction_factor,
+        )
+        if prune
+        else optuna.pruners.NopPruner()
     )
     study = optuna.study.create_study(
-        direction="minimize", sampler=sampler, pruner=pruner,
-        storage=storage, study_name=study_name, load_if_exists=True,
+        direction="minimize",
+        sampler=sampler,
+        pruner=pruner,
+        storage=storage,
+        study_name=study_name,
+        load_if_exists=True,
     )
     # Enqueue the warm start only on a fresh study; on a resumed study the history
     # already carries it, so re-enqueuing would waste a trial re-running it.

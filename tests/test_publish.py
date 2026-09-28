@@ -11,18 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from cosmulator.manifest import (
-    Hyperparameters,
-    Manifest,
-    Provenance,
-    Quality,
-    Training,
-)
-from cosmulator.publish import (
-    DEPOSIT_URL,
-    SANDBOX_DEPOSIT_URL,
-    EmulatorPublisher,
-)
+from cosmulator.manifest import Hyperparameters, Manifest, Provenance, Quality, Training
+from cosmulator.publish import DEPOSIT_URL, SANDBOX_DEPOSIT_URL, EmulatorPublisher
 from cosmulator.store import EmulatorStore
 
 FAKE_TOKEN = "not-a-real-token-0000"

@@ -12,13 +12,7 @@ from pathlib import Path
 import pytest
 
 from cosmulator.fetch import TITLE_PREFIX, EmulatorArchive, deposit_title
-from cosmulator.manifest import (
-    Hyperparameters,
-    Manifest,
-    Provenance,
-    Quality,
-    Training,
-)
+from cosmulator.manifest import Hyperparameters, Manifest, Provenance, Quality, Training
 
 
 class StubResponse:

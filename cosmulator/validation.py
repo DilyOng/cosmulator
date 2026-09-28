@@ -37,17 +37,17 @@ from cosmulator.diagnostics import (
 # surfaced here to be overridden per grid: what counts as "close enough" depends
 # on the downstream use of the posterior, not on the statistics.
 DEFAULT_TOLERANCES = {
-    "width_pct": 1.0,        # mean |sigma_q - sigma_P| / sigma_P, per cent
-    "max_width_pct": 3.0,    # worst single-parameter width error (so one bad
-                             # parameter cannot hide behind a good mean)
-    "bias_sigma": 0.1,       # mean |mean_q - mean_P| / sigma_P
+    "width_pct": 1.0,  # mean |sigma_q - sigma_P| / sigma_P, per cent
+    "max_width_pct": 3.0,  # worst single-parameter width error (so one bad
+    # parameter cannot hide behind a good mean)
+    "bias_sigma": 0.1,  # mean |mean_q - mean_P| / sigma_P
     "wasserstein_sigma": 0.05,  # worst-parameter 1D Wasserstein, in target sigma
-    "oob_frac": 0.02,        # fraction of emulator mass outside the prior box. A
-                             # flow without a support bijector leaks a little of
-                             # its Gaussian tail past a hard wall (mnu>=0, r>=0),
-                             # so a small tolerance is physical, not an accuracy
-                             # failure; a gross value still flags invented mass.
-    "mmd_pvalue": 0.01,      # below this the joint test flags a difference (warn)
+    "oob_frac": 0.02,  # fraction of emulator mass outside the prior box. A
+    # flow without a support bijector leaks a little of
+    # its Gaussian tail past a hard wall (mnu>=0, r>=0),
+    # so a small tolerance is physical, not an accuracy
+    # failure; a gross value still flags invented mass.
+    "mmd_pvalue": 0.01,  # below this the joint test flags a difference (warn)
 }
 
 # Below this effective sample size the target is too poorly resolved to certify.
@@ -187,8 +187,15 @@ def _mmd2(kernels, a, b):
     return float(total)
 
 
-def mmd(target_samples, emulated_samples, weights=None, *,
-        max_points=1000, n_permutations=200, seed=0):
+def mmd(
+    target_samples,
+    emulated_samples,
+    weights=None,
+    *,
+    max_points=1000,
+    n_permutations=200,
+    seed=0,
+):
     """Maximum Mean Discrepancy joint two-sample test (multi-scale, weighted).
 
     MMD measures how far apart two sample clouds are across all smooth features
@@ -282,8 +289,11 @@ def mmd(target_samples, emulated_samples, weights=None, *,
     # Pool the two sets and build each RBF kernel matrix ONCE. Permutations then
     # only reshuffle the weight vectors, never recompute a kernel.
     pooled = np.vstack([x, y])
-    d2 = (np.sum(pooled * pooled, 1)[:, None] + np.sum(pooled * pooled, 1)[None, :]
-          - 2.0 * pooled @ pooled.T)
+    d2 = (
+        np.sum(pooled * pooled, 1)[:, None]
+        + np.sum(pooled * pooled, 1)[None, :]
+        - 2.0 * pooled @ pooled.T
+    )
     d2 = np.maximum(d2, 0.0)
     median = np.median(d2[d2 > 0]) if np.any(d2 > 0) else 1.0
     kernels = [np.exp(-(1.0 / (s * median)) * d2) for s in (0.5, 1.0, 2.0)]
@@ -300,8 +310,12 @@ def mmd(target_samples, emulated_samples, weights=None, *,
     a = np.concatenate([wx, np.zeros(ny)])
     b = np.concatenate([np.zeros(nx), wy])
     obs = _mmd2(kernels, a, b)
-    base = {"mmd2": obs, "n_target": int(nx), "n_emulated": int(ny),
-            "retained_target_mass": retained_mass}
+    base = {
+        "mmd2": obs,
+        "n_target": int(nx),
+        "n_emulated": int(ny),
+        "retained_target_mass": retained_mass,
+    }
 
     # A calibrated p-value needs the pooled points to be EXCHANGEABLE under H0,
     # which holds when both samples are i.i.d. draws from the same distribution --
@@ -329,9 +343,17 @@ def mmd(target_samples, emulated_samples, weights=None, *,
     return {**base, "pvalue": float(pvalue)}
 
 
-def certify(target_samples, emulated_samples, weights=None, *,
-            parameters=None, bounds=None, tolerances=None,
-            min_ess=DEFAULT_MIN_ESS, seed=0):
+def certify(
+    target_samples,
+    emulated_samples,
+    weights=None,
+    *,
+    parameters=None,
+    bounds=None,
+    tolerances=None,
+    min_ess=DEFAULT_MIN_ESS,
+    seed=0,
+):
     """Run the full validation battery and return a tolerance-based verdict.
 
     Parameters
@@ -411,21 +433,27 @@ def certify(target_samples, emulated_samples, weights=None, *,
     d = len(mom["width_error_pct"])
     names = list(parameters) if parameters is not None else [f"p{i}" for i in range(d)]
     report["per_parameter"] = [
-        {"parameter": names[i],
-         "width_err_pct": mom["width_error_pct"][i],
-         "bias_sigma": mom["bias_sigma"][i],
-         "wasserstein_sigma": marg["wasserstein_sigma"][i],
-         "ks": marg["ks"][i]}
+        {
+            "parameter": names[i],
+            "width_err_pct": mom["width_error_pct"][i],
+            "bias_sigma": mom["bias_sigma"][i],
+            "wasserstein_sigma": marg["wasserstein_sigma"][i],
+            "ks": marg["ks"][i],
+        }
         for i in range(d)
     ]
     aw = [abs(x) for x in mom["width_error_pct"]]
     iw = max(range(d), key=lambda i: aw[i])
     report["max_abs_width_err_pct"] = aw[iw]
-    report["worst_width"] = {"parameter": names[iw],
-                             "width_err_pct": mom["width_error_pct"][iw]}
+    report["worst_width"] = {
+        "parameter": names[iw],
+        "width_err_pct": mom["width_error_pct"][iw],
+    }
     ish = max(range(d), key=lambda i: marg["wasserstein_sigma"][i])
-    report["worst_shape"] = {"parameter": names[ish],
-                             "wasserstein_sigma": marg["wasserstein_sigma"][ish]}
+    report["worst_shape"] = {
+        "parameter": names[ish],
+        "wasserstein_sigma": marg["wasserstein_sigma"][ish],
+    }
 
     reasons = []
     width = report["moments"]["mean_abs_width_err_pct"]
@@ -437,7 +465,8 @@ def certify(target_samples, emulated_samples, weights=None, *,
         reasons.append(
             f"parameter {report['worst_width']['parameter']} width error "
             f"{report['max_abs_width_err_pct']:.2f}% > {tol['max_width_pct']}% "
-            f"(single-parameter cap)")
+            f"(single-parameter cap)"
+        )
     if bias > tol["bias_sigma"]:
         reasons.append(f"bias {bias:.3f} sigma > {tol['bias_sigma']}")
     if wass > tol["wasserstein_sigma"]:

@@ -8,12 +8,7 @@ ground-truth relationship and assert the verdict. Pure NumPy, no GPU, no flowjax
 import numpy as np
 import pytest
 
-from cosmulator.validation import (
-    certify,
-    marginal_gof,
-    mmd,
-    out_of_bounds,
-)
+from cosmulator.validation import certify, marginal_gof, mmd, out_of_bounds
 
 
 def _gaussian(n, d, seed, mean=0.0, scale=1.0):
@@ -98,7 +93,8 @@ class TestMmd:
         z = rng.normal(size=(n, 2))
         rho = 0.95
         target = np.column_stack(
-            [z[:, 0], rho * z[:, 0] + np.sqrt(1 - rho**2) * z[:, 1]])
+            [z[:, 0], rho * z[:, 0] + np.sqrt(1 - rho**2) * z[:, 1]]
+        )
         w = np.abs(rng.normal(size=n)) + 0.01
         matched = target.copy()
         decorr = target.copy()
@@ -147,7 +143,8 @@ class TestCertifyVerdicts:
         z = rng.normal(size=(n, 2))
         rho = 0.95
         target = np.column_stack(
-            [z[:, 0], rho * z[:, 0] + np.sqrt(1 - rho**2) * z[:, 1]])
+            [z[:, 0], rho * z[:, 0] + np.sqrt(1 - rho**2) * z[:, 1]]
+        )
         emulated = target.copy()
         emulated[:, 1] = rng.permutation(emulated[:, 1])
         report = certify(target, emulated, seed=0)
@@ -156,7 +153,7 @@ class TestCertifyVerdicts:
 
     def test_fail_on_out_of_bounds(self):
         target = np.abs(_gaussian(4000, 1, 1)) + 0.5  # target well inside (>0)
-        emulated = _gaussian(4000, 1, 2, mean=0.6)    # leaks below zero
+        emulated = _gaussian(4000, 1, 2, mean=0.6)  # leaks below zero
         bounds = np.array([[0.0, np.inf]])
         report = certify(target, emulated, bounds=bounds, seed=0)
         assert report["verdict"] == "fail"

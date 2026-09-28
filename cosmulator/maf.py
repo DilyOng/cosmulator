@@ -1,14 +1,18 @@
 r"""Train a Masked Autoregressive Flow emulator of a posterior, in pure JAX.
 
 This is the emulator that works. It reproduces cosmological nested-sampling
-posteriors to ~1% marginal width on GPU, and captures non-Gaussian degeneracies
-(e.g. the curved :math:`w_0`--:math:`w_a` banana) that affine coupling flows
-(RealNVP) cannot. It is built directly on `flowjax <https://github.com/danielward27/flowjax>`_
+posteriors to ~1% marginal width on GPU, including non-Gaussian degeneracies such
+as the curved :math:`w_0`--:math:`w_a` banana. It is built directly on
+`flowjax <https://github.com/danielward27/flowjax>`_
 -- a **MAF**, trained by **weighted maximum likelihood**, on the sampled
-cosmological parameters, with honest per-parameter standardisation. It deliberately
-does **not** depend on margarine: margarine's RealNVP pipeline over-disperses (its
-prior-bound "gaussianisation" compresses the data relative to the base, inflating
-the marginal widths to ~5--11%), which is what this module was written to escape.
+cosmological parameters, with honest per-parameter standardisation. A MAF is
+autoregressive (each parameter is conditioned on all the previous ones), which is
+more expressive per layer than the affine coupling transforms of RealNVP; an
+optional rational-quadratic-spline transformer sharpens strongly curved
+degeneracies further. It deliberately does **not** depend on margarine: in
+practice margarine's RealNVP pipeline over-disperses (its prior-bound
+"gaussianisation" compresses the data relative to the base, inflating the marginal
+widths to ~5--11%), which is what this module was written to escape.
 
 The recipe mirrors the older TensorFlow-MAF emulator that produced faithful fits,
 reimplemented in JAX so it runs on GPU with a single change of substrate.
@@ -86,8 +90,10 @@ def _weight_stratified_split(weights, val_fraction, test_fraction):
     def systematic(frac, m):
         # Pick ~frac of m positions, spread evenly (every ~1/frac-th).
         idx = np.arange(m)
-        return (np.floor((idx + 1) * frac).astype(np.int64)
-                - np.floor(idx * frac).astype(np.int64)) == 1
+        return (
+            np.floor((idx + 1) * frac).astype(np.int64)
+            - np.floor(idx * frac).astype(np.int64)
+        ) == 1
 
     label = np.array(["train"] * n)  # labels in weight-sorted order
     if test_fraction > 0:
@@ -99,8 +105,11 @@ def _weight_stratified_split(weights, val_fraction, test_fraction):
 
     out = np.empty(n, dtype=object)
     out[order] = label
-    return (np.where(out == "train")[0], np.where(out == "val")[0],
-            np.where(out == "test")[0])
+    return (
+        np.where(out == "train")[0],
+        np.where(out == "val")[0],
+        np.where(out == "test")[0],
+    )
 
 
 def _to_unbounded(theta, bounds, eps=1e-6):
@@ -155,7 +164,7 @@ def _weighted_quantile(x, w, q):
     """Weighted quantile of a 1D array (linear interpolation on the CDF)."""
     order = np.argsort(x)
     x, cw = x[order], np.cumsum(w[order])
-    cw = (cw - 0.5 * w[order]) / cw[-1]          # midpoint CDF (Hazen)
+    cw = (cw - 0.5 * w[order]) / cw[-1]  # midpoint CDF (Hazen)
     return np.interp(q, cw, x)
 
 
@@ -337,6 +346,7 @@ def train_maf_emulator(
     """
     import equinox as eqx
     import jax
+
     # float64 end-to-end: a MAF's sampling is an autoregressive inverse whose
     # repeated exp(log-scale) compositions are numerically unstable in float32
     # (JAX's default), occasionally emitting non-finite or astronomical draws that
@@ -388,8 +398,9 @@ def train_maf_emulator(
                     bnds[i] = [-np.inf, np.inf]
             railing_params = [p for p in parameters if p in keep]
         else:  # True / "all"
-            railing_params = [parameters[i] for i in range(d)
-                              if np.isfinite(bnds[i]).any()]
+            railing_params = [
+                parameters[i] for i in range(d) if np.isfinite(bnds[i]).any()
+            ]
         use_bijector = bool(np.isfinite(bnds).any())
     theta_t = _to_unbounded(theta, bnds) if use_bijector else theta
 
@@ -399,7 +410,8 @@ def train_maf_emulator(
     # does not leak even through the per-parameter moments.
     do_test = certify and test_fraction > 0
     train_idx, val_idx, test_idx = _weight_stratified_split(
-        w, val_fraction=0.1, test_fraction=(test_fraction if do_test else 0.0))
+        w, val_fraction=0.1, test_fraction=(test_fraction if do_test else 0.0)
+    )
     fit_idx = np.concatenate([train_idx, val_idx])
     w_fit = w[fit_idx] / w[fit_idx].sum()
     mean, std = _weighted_standardiser(theta_t[fit_idx], w_fit)
@@ -414,12 +426,21 @@ def train_maf_emulator(
         whiten_L = np.linalg.cholesky(cov + 1e-12 * np.eye(d))
         _Linv = np.linalg.inv(whiten_L)
         std = np.ones(d)
-        _fwd = lambda x: (x - mean) @ _Linv.T
-        _inv = lambda z: z @ whiten_L.T + mean
+
+        def _fwd(x):
+            return (x - mean) @ _Linv.T
+
+        def _inv(z):
+            return z @ whiten_L.T + mean
+
     else:
         whiten_L = None
-        _fwd = lambda x: (x - mean) / std
-        _inv = lambda z: z * std + mean
+
+        def _fwd(x):
+            return (x - mean) / std
+
+        def _inv(z):
+            return z * std + mean
 
     z_tr = jnp.asarray(_fwd(theta_t[train_idx]))
     w_tr = jnp.asarray(w[train_idx])
@@ -429,18 +450,29 @@ def train_maf_emulator(
     key = jax.random.key(seed)
     key, fkey = jax.random.split(key)
     transformer = RationalQuadraticSpline(knots=8, interval=4.0) if spline else None
-    _activations = {"relu": jax.nn.relu, "tanh": jax.nn.tanh,
-                    "silu": jax.nn.silu, "gelu": jax.nn.gelu}
-    activation = (_activations[nn_activation] if isinstance(nn_activation, str)
-                  else nn_activation)
+    _activations = {
+        "relu": jax.nn.relu,
+        "tanh": jax.nn.tanh,
+        "silu": jax.nn.silu,
+        "gelu": jax.nn.gelu,
+    }
+    activation = (
+        _activations[nn_activation] if isinstance(nn_activation, str) else nn_activation
+    )
     flow = masked_autoregressive_flow(
-        fkey, base_dist=Normal(jnp.zeros(d)), transformer=transformer,
-        flow_layers=flow_layers, nn_width=nn_width, nn_depth=nn_depth,
+        fkey,
+        base_dist=Normal(jnp.zeros(d)),
+        transformer=transformer,
+        flow_layers=flow_layers,
+        nn_width=nn_width,
+        nn_depth=nn_depth,
         nn_activation=activation,
     )
 
-    opt = optax.chain(optax.clip_by_global_norm(1.0),
-                      optax.adamw(learning_rate, weight_decay=weight_decay))
+    opt = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adamw(learning_rate, weight_decay=weight_decay),
+    )
     opt_state = opt.init(eqx.filter(flow, eqx.is_inexact_array))
 
     def weighted_nll(fl, x, wt):
@@ -473,7 +505,7 @@ def train_maf_emulator(
         key, sk = jax.random.split(key)
         order = jax.random.permutation(sk, len(z_tr))
         for i in range(0, len(z_tr), bs):
-            b = order[i:i + bs]
+            b = order[i : i + bs]
             flow, opt_state, _ = step(flow, opt_state, z_tr[b], w_tr[b])
         val = float(weighted_nll(flow, z_val, w_val))
         if report is not None:
@@ -488,6 +520,7 @@ def train_maf_emulator(
     certification = None
     if do_test and test_idx.size > 0:
         from cosmulator.validation import certify as _certify
+
         key, sk = jax.random.split(key)
         gen_t = _inv(np.asarray(best_flow.sample(sk, (certify_samples,))))
         gen = _from_unbounded(gen_t, bnds) if use_bijector else gen_t
@@ -499,15 +532,17 @@ def train_maf_emulator(
         # once weight skew and kurtosis are accounted for) can dwarf a genuine ~1%
         # width error and fail a good emulator. The joint MMD carries no p-value for
         # a weighted target, so it is descriptive here, not a pass/fail test.
-        certification = _certify(theta, gen, weights=w, parameters=parameters,
-                                 bounds=bounds)
+        certification = _certify(
+            theta, gen, weights=w, parameters=parameters, bounds=bounds
+        )
         # The held-out test set is reserved for the out-of-sample density check --
         # the genuine overfitting sentinel. If the flow memorised training points,
         # its held-out NLL rises relative to the (early-stopping) validation NLL.
         z_test = jnp.asarray(_fwd(theta_t[test_idx]))
         wt_test = jnp.asarray(w[test_idx])
         heldout_nll = float(
-            -jnp.sum(wt_test * best_flow.log_prob(z_test)) / jnp.sum(wt_test))
+            -jnp.sum(wt_test * best_flow.log_prob(z_test)) / jnp.sum(wt_test)
+        )
         certification["heldout_nll"] = heldout_nll
         certification["val_nll"] = best_val
         certification["overfit_gap_nll"] = heldout_nll - best_val

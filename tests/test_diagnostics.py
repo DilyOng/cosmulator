@@ -77,8 +77,8 @@ class TestForwardKL:
     def _gaussian_logpdf(x, scale=1.0):
         """Log density of an isotropic zero-mean Gaussian at ``x``."""
         d = x.shape[1]
-        return -0.5 * np.sum(x ** 2, axis=1) / scale ** 2 - 0.5 * d * np.log(
-            2.0 * np.pi * scale ** 2
+        return -0.5 * np.sum(x**2, axis=1) / scale**2 - 0.5 * d * np.log(
+            2.0 * np.pi * scale**2
         )
 
     def test_perfect_emulator_is_near_zero(self):
@@ -107,7 +107,7 @@ class TestForwardKL:
         rng = np.random.default_rng(2)
         d, s = 2, 1.5
         x = rng.normal(size=(100000, d))
-        analytic = 0.5 * d * (1.0 / s ** 2 - 1.0) + d * np.log(s)
+        analytic = 0.5 * d * (1.0 / s**2 - 1.0) + d * np.log(s)
         result = forward_kl(self._gaussian_logpdf(x, scale=s), x)
         assert result["forward_kl"] == pytest.approx(analytic, abs=0.02)
 
@@ -128,7 +128,7 @@ class TestForwardKL:
         collapsed[:100] = -np.inf  # 10% of (uniform-weight) mass underflows
         bad = forward_kl(collapsed, x)
         assert np.isfinite(bad["forward_kl"])
-        assert bad["forward_kl"] > good["forward_kl"]        # penalised, monotone
+        assert bad["forward_kl"] > good["forward_kl"]  # penalised, monotone
         assert bad["missed_mass_frac"] == pytest.approx(0.1, abs=1e-9)
         assert good["missed_mass_frac"] == 0.0
 
@@ -249,7 +249,7 @@ class TestKnnKLDivergence:
         shift = np.full(d, mu)
         P = rng.normal(size=(20000, d))
         Q = rng.normal(size=(20000, d)) + shift
-        expected = 0.5 * np.sum(shift ** 2)          # = 0.5 * d * mu^2 = 1.28
+        expected = 0.5 * np.sum(shift**2)  # = 0.5 * d * mu^2 = 1.28
         est = knn_kl_divergence(P, Q, k=5)
         assert est == pytest.approx(expected, abs=0.15)
 
@@ -262,7 +262,7 @@ class TestKnnKLDivergence:
     def test_is_asymmetric_and_nonnegative_for_different(self):
         rng = np.random.default_rng(2)
         P = rng.normal(size=(12000, 2))
-        Q = rng.normal(size=(12000, 2)) * 2.5        # different spread
+        Q = rng.normal(size=(12000, 2)) * 2.5  # different spread
         assert knn_kl_divergence(P, Q, k=5) > 0.1
         assert knn_kl_divergence(Q, P, k=5) > 0.1
 
@@ -272,7 +272,7 @@ class TestEqualWeightResample:
         theta = np.vstack([np.zeros((1000, 1)), 10 * np.ones((1000, 1))])
         w = np.concatenate([np.full(1000, 9.0), np.full(1000, 1.0)])
         out = equal_weight_resample(theta, w, size=5000, seed=0)
-        assert out.mean() == pytest.approx(1.0, abs=0.05)   # 0.9*0 + 0.1*10
+        assert out.mean() == pytest.approx(1.0, abs=0.05)  # 0.9*0 + 0.1*10
 
     def test_default_size_is_ess(self):
         w = np.abs(np.random.default_rng(0).normal(size=4000)) + 1e-3

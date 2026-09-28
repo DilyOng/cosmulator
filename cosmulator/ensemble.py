@@ -26,6 +26,7 @@ sampling. Averaging member log-probs instead would be wrong by Jensen.
 Training needs the ``[train]`` extra (JAX, flowjax, equinox); this module keeps
 those imports lazy so ``import cosmulator`` stays cheap.
 """
+
 import json
 import os
 
@@ -38,11 +39,12 @@ _ARCH_KEYS = ("flow_layers", "nn_width", "nn_depth", "spline")
 
 def _enable_x64():
     import jax
+
     jax.config.update("jax_enable_x64", True)
 
 
 def _member_valid(gen, bounds, expand=100.0, oob_frac_max=0.5):
-    """True if a member's draws are numerically valid -- a TRUTH-INDEPENDENT gate.
+    """Return whether a member's draws are numerically valid (TRUTH-INDEPENDENT).
 
     A run is rejected only for failing to instantiate a usable model, never for
     disagreeing with the target posterior (which would leak the answer into the
@@ -78,18 +80,23 @@ def _member_valid(gen, bounds, expand=100.0, oob_frac_max=0.5):
 
 
 def _build_flow_template(key, d, arch):
-    """A zero-content flow of the right architecture to deserialise leaves into."""
+    """Build a zero-content flow of the right architecture to deserialise into."""
     import jax.numpy as jnp
     from flowjax.bijections import RationalQuadraticSpline
     from flowjax.distributions import Normal
     from flowjax.flows import masked_autoregressive_flow
 
-    transformer = (RationalQuadraticSpline(knots=8, interval=4.0)
-                   if arch.get("spline") else None)
+    transformer = (
+        RationalQuadraticSpline(knots=8, interval=4.0) if arch.get("spline") else None
+    )
     return masked_autoregressive_flow(
-        key, base_dist=Normal(jnp.zeros(d)), transformer=transformer,
-        flow_layers=arch["flow_layers"], nn_width=arch["nn_width"],
-        nn_depth=arch["nn_depth"])
+        key,
+        base_dist=Normal(jnp.zeros(d)),
+        transformer=transformer,
+        flow_layers=arch["flow_layers"],
+        nn_width=arch["nn_width"],
+        nn_depth=arch["nn_depth"],
+    )
 
 
 class _Member:
@@ -103,6 +110,7 @@ class _Member:
 
     def __init__(self, flow, mean, std, whiten_L=None):
         import jax.numpy as jnp
+
         self.flow = flow
         self.mean = jnp.asarray(np.asarray(mean, dtype=np.float64))
         if whiten_L is not None:
@@ -113,7 +121,7 @@ class _Member:
             self._diag = False
         else:
             std = np.asarray(std, dtype=np.float64)
-            self.W = jnp.asarray(std)                 # diagonal stored as a vector
+            self.W = jnp.asarray(std)  # diagonal stored as a vector
             self.Winv = jnp.asarray(1.0 / std)
             self._log_det_W = float(np.sum(np.log(np.abs(std))))
             self._diag = True
@@ -148,12 +156,22 @@ class EnsembleEmulator:
 
     @property
     def K(self):
+        """Number of flows in the ensemble."""
         return len(self.members)
 
     # ------------------------------------------------------------------ build
     @classmethod
-    def train(cls, samples, parameters=None, K=8, seeds=None, bounds=None,
-              max_retries=None, report=None, **train_kwargs):
+    def train(
+        cls,
+        samples,
+        parameters=None,
+        K=8,
+        seeds=None,
+        bounds=None,
+        max_retries=None,
+        report=None,
+        **train_kwargs,
+    ):
         """Train ``K`` validity-screened members from a fixed recipe.
 
         Each member is trained with ``certify=False`` and a distinct seed. When
@@ -175,8 +193,9 @@ class EnsembleEmulator:
         if max_retries is None:
             max_retries = 2 * K
         # a seed pool: the K requested seeds, then extras to replace invalid runs
-        pool = base_seeds + list(range(max(base_seeds) + 1,
-                                       max(base_seeds) + 1 + max_retries))
+        pool = base_seeds + list(
+            range(max(base_seeds) + 1, max(base_seeds) + 1 + max_retries)
+        )
         arch = {k: train_kwargs.get(k) for k in _ARCH_KEYS if k in train_kwargs}
         bnds = None if bounds is None else np.asarray(bounds, dtype=np.float64)
 
@@ -184,12 +203,19 @@ class EnsembleEmulator:
         for s in pool:
             if len(members) >= K:
                 break
-            out = train_maf_emulator(samples, parameters=parameters, seed=s,
-                                     certify=False, bounds=bounds, **train_kwargs)
+            out = train_maf_emulator(
+                samples,
+                parameters=parameters,
+                seed=s,
+                certify=False,
+                bounds=bounds,
+                **train_kwargs,
+            )
             m = _Member(out["flow"], out["mean"], out["std"], out.get("whiten_L"))
             ok = True
             if bnds is not None:
                 import jax
+
                 # 50k probes the ~4.6-sigma tails where affine-inverse blow-ups
                 # live; 20k was too small to catch the stochastic failures.
                 g = np.asarray(m.sample(jax.random.key(90000 + s), 50000))
@@ -212,7 +238,8 @@ class EnsembleEmulator:
 
         key = jax.random.key(seed)
         counts = np.random.default_rng(seed).multinomial(
-            n, np.full(self.K, 1.0 / self.K))
+            n, np.full(self.K, 1.0 / self.K)
+        )
         out = []
         for m, c in zip(self.members, counts):
             if c == 0:
@@ -222,7 +249,7 @@ class EnsembleEmulator:
         return np.concatenate(out, axis=0)
 
     def log_prob(self, theta):
-        """Exact mixture log-density ``logsumexp_k(log q_k) - log K`` in physical space."""
+        """Exact mixture log-density ``logsumexp_k(log q_k) - log K`` (physical)."""
         _enable_x64()
         import jax.numpy as jnp
         from jax.scipy.special import logsumexp
@@ -243,8 +270,14 @@ class EnsembleEmulator:
         n = n or 50000 * self.K
         gen = self.sample(n, seed=seed)
         bounds = certify_kwargs.pop("bounds", self.bounds)
-        return _certify(theta, gen, weights=weights, parameters=self.parameters,
-                        bounds=bounds, **certify_kwargs)
+        return _certify(
+            theta,
+            gen,
+            weights=weights,
+            parameters=self.parameters,
+            bounds=bounds,
+            **certify_kwargs,
+        )
 
     def D_KL(self, bounds=None, n=200000, seed=0):
         r"""Marginal information gain ``D_KL(q || pi)`` for a uniform prior box.
@@ -302,16 +335,17 @@ class EnsembleEmulator:
         :func:`cosmulator.diagnostics.knn_kl_divergence`). Near zero means the
         emulator matches the true marginal posterior.
         """
-        from cosmulator.diagnostics import (equal_weight_resample,
-                                            knn_kl_divergence)
+        from cosmulator.diagnostics import equal_weight_resample, knn_kl_divergence
 
         theta = np.asarray(samples[self.parameters].to_numpy(), dtype=np.float64)
         if weights is None:
             weights = np.asarray(samples.get_weights(), dtype=np.float64)
         true = equal_weight_resample(theta, weights, size=n_true, seed=seed)
         emu = self.sample(n_emu, seed=seed + 1)
-        return {"kl_true_emu": knn_kl_divergence(true, emu, k=k),
-                "kl_emu_true": knn_kl_divergence(emu, true, k=k)}
+        return {
+            "kl_true_emu": knn_kl_divergence(true, emu, k=k),
+            "kl_emu_true": knn_kl_divergence(emu, true, k=k),
+        }
 
     # ------------------------------------------------------------- persistence
     def save(self, directory):
@@ -319,12 +353,17 @@ class EnsembleEmulator:
         import equinox as eqx
 
         os.makedirs(directory, exist_ok=True)
-        meta = {"parameters": self.parameters, "arch": self.arch, "K": self.K,
-                "bounds": None if self.bounds is None else self.bounds.tolist()}
+        meta = {
+            "parameters": self.parameters,
+            "arch": self.arch,
+            "K": self.K,
+            "bounds": None if self.bounds is None else self.bounds.tolist(),
+        }
         maps = {}
         for i, m in enumerate(self.members):
-            eqx.tree_serialise_leaves(os.path.join(directory, f"member_{i}.eqx"),
-                                      m.flow)
+            eqx.tree_serialise_leaves(
+                os.path.join(directory, f"member_{i}.eqx"), m.flow
+            )
             maps[f"mean_{i}"] = np.asarray(m.mean)
             maps[f"W_{i}"] = np.asarray(m.W)
             maps[f"diag_{i}"] = np.array(m._diag)
@@ -335,7 +374,7 @@ class EnsembleEmulator:
     @classmethod
     def load(cls, directory):
         """Load an ensemble saved by :meth:`save`."""
-        _enable_x64()                       # members are trained/saved in float64
+        _enable_x64()  # members are trained/saved in float64
         import equinox as eqx
         import jax
 
@@ -348,12 +387,14 @@ class EnsembleEmulator:
         for i in range(K):
             tmpl = _build_flow_template(jax.random.key(0), d, arch)
             flow = eqx.tree_deserialise_leaves(
-                os.path.join(directory, f"member_{i}.eqx"), tmpl)
+                os.path.join(directory, f"member_{i}.eqx"), tmpl
+            )
             mean, W = maps[f"mean_{i}"], maps[f"W_{i}"]
             if bool(maps[f"diag_{i}"]):
                 members.append(_Member(flow, mean, W))
             else:
                 members.append(_Member(flow, mean, None, whiten_L=W))
         bounds = meta.get("bounds")
-        return cls(members, params, arch,
-                   bounds=None if bounds is None else np.asarray(bounds))
+        return cls(
+            members, params, arch, bounds=None if bounds is None else np.asarray(bounds)
+        )

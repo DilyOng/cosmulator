@@ -37,8 +37,14 @@ def test_module_imports_without_optuna():
 
 class TestSearchSpace:
     EXPECTED = {
-        "flow_layers", "nn_width", "nn_depth", "nn_activation",
-        "learning_rate", "weight_decay", "batch_size", "spline",
+        "flow_layers",
+        "nn_width",
+        "nn_depth",
+        "nn_activation",
+        "learning_rate",
+        "weight_decay",
+        "batch_size",
+        "spline",
     }
 
     def test_returns_trainer_kwargs(self):
