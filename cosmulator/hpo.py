@@ -130,6 +130,8 @@ def tune(
     # namespace package whose top-level attributes (``optuna.samplers``,
     # ``optuna.create_study``, ``optuna.TrialPruned``) are not auto-populated, so a
     # bare ``import optuna`` then ``optuna.samplers`` raises AttributeError.
+    import gc
+
     import jax
     import optuna.exceptions
     import optuna.pruners
@@ -158,13 +160,19 @@ def tune(
                 certify=False,
                 **hp,
             )
+            # Cast to a Python float so Optuna's storage keeps no JAX device array
+            # alive, and drop the trial's trained flow before collecting.
+            val = float(result["best_val_nll"])
+            del result
         finally:
             # Each trial JIT-compiles a differently shaped flow; JAX's global
             # compilation cache is not freed by Python GC, so it grows unbounded
             # across trials and eventually exhausts host memory (segfault). Clear
-            # it after every trial (including pruned ones) to bound memory.
+            # it and force collection after every trial (including pruned ones) so
+            # the C++/XLA executables are actually released, not just dereferenced.
             jax.clear_caches()
-        return result["best_val_nll"]
+            gc.collect()
+        return val
 
     # Multivariate TPE models the JOINT hyperparameter density, so it captures
     # interactions (flow_layers x nn_width x nn_depth total capacity, lr x
