@@ -5,6 +5,7 @@ cosmulator: accelerating cosmological inference with JAX machine-learning emulat
 :Author: Dily Duan Yi Ong
 :License: MIT
 :Homepage: https://github.com/DilyOng/cosmulator
+:PyPI: https://pypi.org/project/cosmulator/
 
 .. image:: https://img.shields.io/pypi/v/cosmulator.svg
    :target: https://pypi.org/project/cosmulator/
