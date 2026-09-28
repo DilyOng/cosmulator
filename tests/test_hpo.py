@@ -61,7 +61,7 @@ class TestSearchSpace:
         assert hp["flow_layers"] == 4
         assert hp["nn_depth"] == 1
         assert hp["batch_size"] == 256
-        assert hp["spline"] is False
+        assert hp["spline"] is True  # transformer pinned to the spline
         assert hp["learning_rate"] > 0
 
 
@@ -74,4 +74,4 @@ class TestWarmStart:
     def test_default_warm_start_is_the_known_good_config(self):
         assert DEFAULT_WARM_START["flow_layers"] == 8
         assert DEFAULT_WARM_START["learning_rate"] == 1e-3
-        assert DEFAULT_WARM_START["spline"] is False
+        assert DEFAULT_WARM_START["spline"] is True
