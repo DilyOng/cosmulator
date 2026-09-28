@@ -130,6 +130,7 @@ def tune(
     # namespace package whose top-level attributes (``optuna.samplers``,
     # ``optuna.create_study``, ``optuna.TrialPruned``) are not auto-populated, so a
     # bare ``import optuna`` then ``optuna.samplers`` raises AttributeError.
+    import jax
     import optuna.exceptions
     import optuna.pruners
     import optuna.samplers
@@ -145,17 +146,24 @@ def tune(
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
 
-        result = train_maf_emulator(
-            samples,
-            parameters=parameters,
-            epochs=epochs,
-            patience=patience,
-            whiten=whiten,
-            seed=train_seed,
-            report=reporter,
-            certify=False,
-            **hp,
-        )
+        try:
+            result = train_maf_emulator(
+                samples,
+                parameters=parameters,
+                epochs=epochs,
+                patience=patience,
+                whiten=whiten,
+                seed=train_seed,
+                report=reporter,
+                certify=False,
+                **hp,
+            )
+        finally:
+            # Each trial JIT-compiles a differently shaped flow; JAX's global
+            # compilation cache is not freed by Python GC, so it grows unbounded
+            # across trials and eventually exhausts host memory (segfault). Clear
+            # it after every trial (including pruned ones) to bound memory.
+            jax.clear_caches()
         return result["best_val_nll"]
 
     # Multivariate TPE models the JOINT hyperparameter density, so it captures
