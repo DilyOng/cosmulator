@@ -231,8 +231,8 @@ class EnsembleEmulator:
         return ens
 
     # ----------------------------------------------------------------- density
-    def sample(self, n, seed=0):
-        """Draw ``n`` samples from the mixture (pick a member uniformly, then draw)."""
+    def _sample_raw(self, n, seed=0):
+        """Draw ``n`` raw mixture samples (may leak past the prior box)."""
         _enable_x64()
         import jax
 
@@ -248,6 +248,29 @@ class EnsembleEmulator:
             out.append(np.asarray(m.sample(sk, int(c))))
         return np.concatenate(out, axis=0)
 
+    def sample(self, n, seed=0, clip=None):
+        """Draw ``n`` samples from the mixture (pick a member uniformly, then draw).
+
+        The flow is a smooth, unbounded density, so it leaks a little mass past
+        hard prior walls. When the prior box ``bounds`` is known, draws are
+        rejection-truncated to it by default -- i.e. sampled from the flow
+        truncated to the prior support and renormalised -- so the deployed
+        emulator respects the prior. Pass ``clip=False`` for raw (unbounded) draws.
+        """
+        clip = (self.bounds is not None) if clip is None else clip
+        if not clip or self.bounds is None:
+            return self._sample_raw(n, seed)
+        lo, hi = self.bounds[:, 0], self.bounds[:, 1]
+        out, got, s = [], 0, seed
+        while got < n:
+            g = self._sample_raw(int(max(n - got, 1) * 1.3) + 32, s)
+            s += 1
+            g = g[~((g < lo) | (g > hi)).any(axis=1)]
+            if len(g):
+                out.append(g)
+                got += len(g)
+        return np.concatenate(out, axis=0)[:n]
+
     def log_prob(self, theta):
         """Exact mixture log-density ``logsumexp_k(log q_k) - log K`` (physical)."""
         _enable_x64()
@@ -260,7 +283,13 @@ class EnsembleEmulator:
 
     # -------------------------------------------------------------- diagnostics
     def certify(self, samples, weights=None, n=None, seed=0, **certify_kwargs):
-        """Certify pooled mixture samples against the (weighted) reference chain."""
+        """Certify the DEPLOYED (prior-truncated) mixture against the reference chain.
+
+        The raw out-of-box fraction of the unbounded flow is reported as
+        ``raw_oob_frac`` -- a model diagnostic -- but it does not gate the verdict,
+        because the deployed sampler truncates to the prior box. Width, KL and
+        Wasserstein are therefore judged on the in-box product the user receives.
+        """
         from cosmulator.validation import certify as _certify
 
         theta = np.asarray(samples[self.parameters].to_numpy(), dtype=np.float64)
@@ -268,9 +297,15 @@ class EnsembleEmulator:
             weights = np.asarray(samples.get_weights(), dtype=np.float64)
         weights = weights / weights.sum()
         n = n or 50000 * self.K
-        gen = self.sample(n, seed=seed)
         bounds = certify_kwargs.pop("bounds", self.bounds)
-        return _certify(
+        gen = self._sample_raw(n, seed=seed)
+        raw_oob = None
+        if bounds is not None:
+            b = np.asarray(bounds, dtype=np.float64)
+            inbox = ~((gen < b[:, 0]) | (gen > b[:, 1])).any(axis=1)
+            raw_oob = float(1.0 - inbox.mean())
+            gen = gen[inbox]  # certify the truncated product actually deployed
+        res = _certify(
             theta,
             gen,
             weights=weights,
@@ -278,6 +313,8 @@ class EnsembleEmulator:
             bounds=bounds,
             **certify_kwargs,
         )
+        res["raw_oob_frac"] = raw_oob
+        return res
 
     def D_KL(self, bounds=None, n=200000, seed=0):
         r"""Marginal information gain ``D_KL(q || pi)`` for a uniform prior box.
