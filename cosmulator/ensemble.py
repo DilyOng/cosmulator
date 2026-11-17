@@ -34,7 +34,7 @@ import numpy as np
 
 from cosmulator.parameters import cosmological_parameters
 
-_ARCH_KEYS = ("flow_layers", "nn_width", "nn_depth", "spline")
+_ARCH_KEYS = ("flow_layers", "nn_width", "nn_depth", "spline", "nn_activation")
 
 
 def _enable_x64():
@@ -81,6 +81,7 @@ def _member_valid(gen, bounds, expand=100.0, oob_frac_max=0.5):
 
 def _build_flow_template(key, d, arch):
     """Build a zero-content flow of the right architecture to deserialise into."""
+    import jax
     import jax.numpy as jnp
     from flowjax.bijections import RationalQuadraticSpline
     from flowjax.distributions import Normal
@@ -89,6 +90,19 @@ def _build_flow_template(key, d, arch):
     transformer = (
         RationalQuadraticSpline(knots=8, interval=4.0) if arch.get("spline") else None
     )
+    # The activation is a static (non-array) field, so it is NOT stored in the
+    # serialised leaves -- it must be rebuilt here from the manifest or the
+    # deserialised weights silently load into the wrong network. Mirror the
+    # string->callable map used at train time (maf.py); default relu for
+    # pre-fix ensembles whose arch predates nn_activation being recorded.
+    act = arch.get("nn_activation", "relu")
+    if isinstance(act, str):
+        act = {
+            "relu": jax.nn.relu,
+            "tanh": jax.nn.tanh,
+            "silu": jax.nn.silu,
+            "gelu": jax.nn.gelu,
+        }[act]
     return masked_autoregressive_flow(
         key,
         base_dist=Normal(jnp.zeros(d)),
@@ -96,6 +110,7 @@ def _build_flow_template(key, d, arch):
         flow_layers=arch["flow_layers"],
         nn_width=arch["nn_width"],
         nn_depth=arch["nn_depth"],
+        nn_activation=act,
     )
 
 
@@ -197,6 +212,9 @@ class EnsembleEmulator:
             range(max(base_seeds) + 1, max(base_seeds) + 1 + max_retries)
         )
         arch = {k: train_kwargs.get(k) for k in _ARCH_KEYS if k in train_kwargs}
+        # keep the activation JSON-serialisable: store its name, not the callable
+        if callable(arch.get("nn_activation")):
+            arch["nn_activation"] = getattr(arch["nn_activation"], "__name__", "relu")
         bnds = None if bounds is None else np.asarray(bounds, dtype=np.float64)
 
         members, invalid = [], 0

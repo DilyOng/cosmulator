@@ -110,3 +110,46 @@ def test_bounds_stored_as_array():
     e = _empty(bounds=[[0.0, 1.0], [-2.0, 2.0]])
     assert isinstance(e.bounds, np.ndarray)
     assert e.bounds.shape == (2, 2)
+
+
+def test_arch_keys_record_activation():
+    # the activation is a static (non-array) field, so it is not in the
+    # serialised leaves: it must be recorded in the manifest or load() rebuilds
+    # the flow with the wrong nonlinearity and the density is silently wrong
+    from cosmulator.ensemble import _ARCH_KEYS
+
+    assert "nn_activation" in _ARCH_KEYS
+
+
+def test_activation_round_trips_through_serialisation(tmp_path):
+    jax = pytest.importorskip("jax")
+    eqx = pytest.importorskip("equinox")
+    pytest.importorskip("flowjax")
+    from cosmulator.ensemble import _build_flow_template
+
+    d = 4
+    arch = {
+        "flow_layers": 3,
+        "nn_width": 16,
+        "nn_depth": 2,
+        "spline": True,
+        "nn_activation": "tanh",
+    }
+    flow = _build_flow_template(jax.random.key(0), d, arch)
+    path = tmp_path / "member.eqx"
+    eqx.tree_serialise_leaves(str(path), flow)
+    x = jax.random.normal(jax.random.key(1), (5, d))
+    lp = np.asarray(flow.log_prob(x))
+
+    # rebuilt with the recorded activation -> exact round-trip
+    back = eqx.tree_deserialise_leaves(
+        str(path), _build_flow_template(jax.random.key(0), d, arch)
+    )
+    assert np.allclose(lp, np.asarray(back.log_prob(x)))
+
+    # rebuilt as relu (the pre-fix default) -> demonstrably different density
+    relu = eqx.tree_deserialise_leaves(
+        str(path),
+        _build_flow_template(jax.random.key(0), d, dict(arch, nn_activation="relu")),
+    )
+    assert not np.allclose(lp, np.asarray(relu.log_prob(x)))
