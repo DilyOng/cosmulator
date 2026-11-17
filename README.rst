@@ -19,10 +19,6 @@ cosmulator: accelerating cosmological inference with JAX machine-learning emulat
    :target: https://github.com/DilyOng/cosmulator/blob/master/LICENSE
    :alt: License: MIT
 
-.. image:: https://img.shields.io/conda/vn/conda-forge/cosmulator.svg
-   :target: https://anaconda.org/conda-forge/cosmulator
-   :alt: conda-forge
-
 ``cosmulator`` trains JAX normalising-flow emulators of nested-sampling
 posteriors on GPU, so a distribution can be resampled instantly for fast
 marginalisation and Bayesian evidence, and manages the resulting emulators
