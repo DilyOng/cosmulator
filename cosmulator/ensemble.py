@@ -437,6 +437,14 @@ class EnsembleEmulator:
             meta = json.load(f)
         maps = np.load(os.path.join(directory, "maps.npz"))
         params, arch, K = meta["parameters"], meta["arch"], meta["K"]
+        # Ensembles saved before nn_activation was persisted have it recorded in
+        # a sidecar nn_activation.json (written by the migration) instead of the
+        # arch, so the original ensemble.json is never rewritten. Honour it here.
+        if "nn_activation" not in arch:
+            sidecar = os.path.join(directory, "nn_activation.json")
+            if os.path.exists(sidecar):
+                with open(sidecar) as f:
+                    arch = {**arch, "nn_activation": json.load(f)["nn_activation"]}
         d = len(params)
         members = []
         for i in range(K):
