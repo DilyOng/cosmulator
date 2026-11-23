@@ -106,6 +106,28 @@ def test_dkl_requires_finite_box():
         _empty(bounds=np.array([[0.0, 1.0], [0.0, np.inf]])).D_KL()
 
 
+def test_nuisance_free_logL_requires_bounds():
+    with pytest.raises(ValueError, match="bounds"):
+        _empty(bounds=None).nuisance_free_logL(np.zeros((3, 2)), log_evidence=0.0)
+
+
+def test_nuisance_free_logL_requires_finite_box():
+    with pytest.raises(ValueError, match="finite"):
+        _empty(bounds=np.array([[0.0, 1.0], [0.0, np.inf]])).nuisance_free_logL(
+            np.zeros((3, 2)), log_evidence=0.0
+        )
+
+
+def test_nuisance_free_logL_adds_logZ_and_logV(monkeypatch):
+    # log L(theta) = log q(theta) + log Z + log V, with log V = sum(log(hi - lo))
+    e = _empty(bounds=np.array([[0.0, 2.0], [-1.0, 1.0]]))  # V = 2 * 2 = 4
+    theta = np.zeros((5, 2))
+    monkeypatch.setattr(e, "log_prob", lambda th: np.full(len(th), -3.0))
+    log_Z = 1.5
+    out = e.nuisance_free_logL(theta, log_evidence=log_Z)
+    assert np.allclose(out, -3.0 + log_Z + np.log(4.0))
+
+
 def test_bounds_stored_as_array():
     e = _empty(bounds=[[0.0, 1.0], [-2.0, 2.0]])
     assert isinstance(e.bounds, np.ndarray)

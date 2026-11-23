@@ -355,6 +355,55 @@ class EnsembleEmulator:
         log_q = self.log_prob(theta)
         return float(np.mean(log_q) + log_V)
 
+    def nuisance_free_logL(self, theta, log_evidence, bounds=None):
+        r"""Nuisance-free (nuisance-marginalised) log-likelihood at ``theta``.
+
+        Converts the emulated nuisance-marginalised posterior into the
+        nuisance-free likelihood of Bevins et al. (2022),
+        ``L(theta) = P(theta) * Z / pi(theta)``, where ``P`` is the marginal
+        posterior density (this emulator's own :meth:`log_prob`), ``Z`` the
+        evidence of the parent run, and ``pi`` the marginal prior. Because the
+        emulator is trained only on the sampled cosmological parameters, which
+        carry a uniform box prior, the marginal prior is the constant
+        ``pi = 1/V`` with ``log V = sum_i log(hi_i - lo_i)``, so
+
+            log L(theta) = log q(theta) + log Z + log V.
+
+        The untruncated (physical) :meth:`log_prob` is used, which is the
+        correctly normalised density for a likelihood. This assumes a uniform,
+        separable marginal prior on the sampled parameters, and is not valid for
+        a non-uniform marginal prior (for example a derived parameter).
+
+        Parameters
+        ----------
+        theta : array_like, shape (n, d)
+            Points at which to evaluate the likelihood, in the sampled-parameter
+            order of :attr:`parameters`.
+        log_evidence : float
+            The natural-log evidence ``log Z`` of the parent nested-sampling run
+            (for example from the ``unimpeded`` manifest).
+        bounds : array_like, shape (d, 2), optional
+            Prior box, defaulting to the stored :attr:`bounds`.
+
+        Returns
+        -------
+        ndarray, shape (n,)
+            The nuisance-free ``log L(theta)`` with its absolute normalisation
+            (the evidence and prior-volume factors included), so it can be
+            combined across experiments and compared between models.
+        """
+        bounds = self.bounds if bounds is None else np.asarray(bounds, dtype=np.float64)
+        if bounds is None:
+            raise ValueError("nuisance_free_logL needs the prior box `bounds` (d, 2).")
+        lo, hi = bounds[:, 0], bounds[:, 1]
+        if not np.isfinite(lo).all() or not np.isfinite(hi).all():
+            raise ValueError(
+                "nuisance_free_logL needs finite two-sided bounds "
+                "(uniform marginal prior)."
+            )
+        log_V = float(np.sum(np.log(hi - lo)))
+        return self.log_prob(theta) + float(log_evidence) + log_V
+
     def drop_invalid(self, bounds=None, n=20000, seed=0):
         """Post-hoc safety net: drop numerically invalid members (truth-independent).
 
