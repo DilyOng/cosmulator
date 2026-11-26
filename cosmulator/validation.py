@@ -48,6 +48,9 @@ DEFAULT_TOLERANCES = {
     # so a small tolerance is physical, not an accuracy
     # failure; a gross value still flags invented mass.
     "mmd_pvalue": 0.01,  # below this the joint test flags a difference (warn)
+    "ks_logp": 0.05,  # KS statistic on the emulator log-density (effect size,
+    # not a p-value): above this the density-level distributions differ enough to
+    # warn. Applied by EnsembleEmulator.certify, which has the flow density.
 }
 
 # Below this effective sample size the target is too poorly resolved to certify.

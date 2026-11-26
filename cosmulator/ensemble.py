@@ -332,6 +332,27 @@ class EnsembleEmulator:
             **certify_kwargs,
         )
         res["raw_oob_frac"] = raw_oob
+
+        # Density-level KS-on-logP: needs the flow density, so it is computed here
+        # rather than in validation.certify (which sees only samples). Reported
+        # alongside MMD, and used as a soft effect-size gate (never a p-value):
+        # a pass is downgraded to warn if D exceeds the ks_logp tolerance.
+        from cosmulator.diagnostics import ks_logp as _ks_logp
+        from cosmulator.validation import DEFAULT_TOLERANCES
+
+        res["ks_logp"] = _ks_logp(self.log_prob(theta), self.log_prob(gen),
+                                  weights=weights)
+        ks_tol = dict(DEFAULT_TOLERANCES)
+        ks_tol.update(certify_kwargs.get("tolerances") or {})
+        if res["ks_logp"]["ks"] > ks_tol["ks_logp"] and res.get("verdict") in ("pass", "warn"):
+            if res["verdict"] == "pass":
+                res["verdict"] = "warn"
+                res["reasons"] = res.get("reasons", [])
+            res["reasons"].append(
+                f"passes marginal tolerances but KS-on-logP D="
+                f"{res['ks_logp']['ks']:.3f} > {ks_tol['ks_logp']} "
+                f"(density-level mismatch; dlogp={res['ks_logp']['dlogp']:+.2f} nats)"
+            )
         return res
 
     def D_KL(self, bounds=None, n=200000, seed=0):
@@ -450,6 +471,31 @@ class EnsembleEmulator:
             "kl_true_emu": knn_kl_divergence(true, emu, k=k),
             "kl_emu_true": knn_kl_divergence(emu, true, k=k),
         }
+
+    def ks_logp(self, samples, weights=None, n_emu=20000, seed=0):
+        r"""KS test on the emulator log-density -- the recommended certification.
+
+        Evaluates this ensemble's exact mixture :meth:`log_prob` at the true
+        samples and at the emulator's own draws, then runs the weighted
+        two-sample Kolmogorov--Smirnov test of
+        :func:`cosmulator.diagnostics.ks_logp` on those two one-dimensional
+        :math:`\log q` distributions. Being one-dimensional and built on the
+        analytic flow density, it certifies the emulator reliably even on weakly
+        constrained posteriors with few samples, where :meth:`knn_kl` (a 6-D
+        k-NN density estimate) degrades for reasons unrelated to the emulator.
+
+        Returns the dict from :func:`cosmulator.diagnostics.ks_logp`: ``ks``
+        (0 = perfect), ``pvalue``, ``n_eff`` and the signed ``dlogp``.
+        """
+        from cosmulator.diagnostics import ks_logp as _ks_logp
+
+        theta = np.asarray(samples[self.parameters].to_numpy(), dtype=np.float64)
+        if weights is None:
+            weights = np.asarray(samples.get_weights(), dtype=np.float64)
+        z_target = self.log_prob(theta)
+        emu = self.sample(n_emu, seed=seed + 1)
+        z_emu = self.log_prob(emu)
+        return _ks_logp(z_target, z_emu, weights=weights)
 
     # ------------------------------------------------------------- persistence
     def save(self, directory):

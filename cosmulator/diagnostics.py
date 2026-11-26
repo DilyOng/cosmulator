@@ -104,6 +104,120 @@ def self_consistency(log_prob_at_target, log_prob_at_emulated, weights=None):
     }
 
 
+def ks_logp(log_prob_at_target, log_prob_at_emulated, weights=None):
+    r"""Kolmogorov--Smirnov test on the emulator log-density.
+
+    The recommended scalar certification of an emulated posterior. For a flow
+    :math:`q` approximating a posterior :math:`P`, the one-dimensional statistic
+    :math:`z = \log q(\theta)` has, when :math:`q = P`, the *same* distribution
+    whether :math:`\theta` is drawn from :math:`P` or from :math:`q`. Comparing
+    those two distributions of :math:`z` with a two-sample Kolmogorov--Smirnov
+    test therefore certifies the emulator using only its own density: no density
+    estimation, no re-running of anything, and in one dimension rather than the
+    full parameter space.
+
+    This is the multidimensional-KS idea of Harrison et al. (2015,
+    :arxiv:`1404.7735`) specialised to the posterior-density coordinate -- the
+    coordinate their highest-probability-density mapping is monotonic in -- and
+    the self-consistency check used by ``margarine`` (Bevins et al.,
+    :arxiv:`2205.12841`). Unlike :func:`knn_kl_divergence`, whose k-NN density
+    estimate needs many samples and so breaks on weakly constrained (few-sample)
+    posteriors for reasons unrelated to the emulator, this statistic is
+    one-dimensional and uses the analytic flow density, so it stays well behaved
+    when the target chain is small.
+
+    Parameters
+    ----------
+    log_prob_at_target : array_like
+        The emulator log density :math:`\log q` evaluated at samples drawn from
+        the target (e.g. a nested-sampling chain).
+    log_prob_at_emulated : array_like
+        The emulator log density :math:`\log q` evaluated at the emulator's own
+        samples.
+    weights : array_like, optional
+        Weights for the target samples. Nested-sampling output is weighted, and
+        ignoring that biases the comparison.
+
+    Returns
+    -------
+    dict
+        ``ks`` -- the two-sample KS statistic :math:`D` on :math:`\log q`
+        (``0`` = identical distributions), the effect size to certify on;
+        ``ks_at_logp`` and ``ks_cdf_level`` -- where the mismatch lives, the
+        :math:`\log q` value at the maximum separation and the target CDF level
+        there (near ``0`` = low-density tail, near ``1`` = high-density core);
+        ``pvalue`` -- an asymptotic two-sample p-value from the weighted target's
+        effective sample size, **heuristic only** (the weighted-ECDF null is not
+        the classical KS null and nested-sampling draws are not i.i.d.), so do
+        not gate a verdict on it; ``n_eff`` -- that effective sample size;
+        ``max_weight`` -- the largest normalised target weight, a check that the
+        asymptotics are not dominated by a few points; and ``E_q_logq``,
+        ``E_P_logq``, ``dlogp`` echoing :func:`self_consistency` for a signed
+        read of the direction of any mismatch (``dlogp > 0`` is consistent with
+        an over-concentrated emulator, though it is not uniquely a width error).
+
+    Notes
+    -----
+    Non-finite densities (a flow can legitimately return ``-inf`` far into the
+    tails) are dropped before the test. The same ``log q`` must be used for both
+    inputs for the test to be valid -- pass one emulator's density evaluated on
+    both sample sets, which :meth:`cosmulator.ensemble.EnsembleEmulator.ks_logp`
+    does for you.
+    """
+    at_target = np.asarray(log_prob_at_target, dtype=float)
+    at_emu = np.asarray(log_prob_at_emulated, dtype=float)
+    wt = _normalised_weights(weights, at_target.size)
+
+    ft = np.isfinite(at_target)
+    fe = np.isfinite(at_emu)
+    if not ft.any() or not fe.any():
+        raise ValueError("no finite log densities on one of the sample sets")
+    zt, wt = at_target[ft], wt[ft]
+    wt = wt / wt.sum()
+    ze = at_emu[fe]
+    we = np.full(ze.size, 1.0 / ze.size)
+
+    # weighted two-sample KS on the 1D log-density projection: build weighted
+    # empirical CDFs on the pooled grid and take their largest separation.
+    grid = np.sort(np.concatenate([zt, ze]))
+    ot = np.argsort(zt)
+    cdf_t = np.concatenate([[0.0], np.cumsum(wt[ot])])
+    f_t = cdf_t[np.searchsorted(zt[ot], grid, side="right")]
+    oe = np.argsort(ze)
+    cdf_e = np.concatenate([[0.0], np.cumsum(we[oe])])
+    f_e = cdf_e[np.searchsorted(ze[oe], grid, side="right")]
+    sep = np.abs(f_t - f_e)
+    imax = int(np.argmax(sep))
+    ks = float(sep[imax])
+    ks_at_logp = float(grid[imax])
+    ks_cdf_level = float(f_t[imax])
+
+    # asymptotic two-sample p-value from the weighted target's effective size.
+    # HEURISTIC ONLY: the weighted-ECDF null is not the classical KS null and NS
+    # draws are not i.i.d., so certify on the effect size (ks / dlogp), not on p.
+    ess_t = float(1.0 / np.sum(wt ** 2))
+    n_eff = ess_t * ze.size / (ess_t + ze.size)
+    try:
+        from scipy.special import kolmogorov
+        pvalue = float(kolmogorov(np.sqrt(n_eff) * ks))
+    except Exception:
+        pvalue = None
+
+    e_target = float(np.sum(wt * zt))
+    e_emu = float(np.mean(ze))
+    return {
+        "ks": ks,
+        "ks_at_logp": ks_at_logp,
+        "ks_cdf_level": ks_cdf_level,
+        "pvalue": pvalue,
+        "n_eff": float(n_eff),
+        "max_weight": float(wt.max()),
+        "E_q_logq": e_emu,
+        "E_P_logq": e_target,
+        "dlogp": e_emu - e_target,
+    }
+
+
 def forward_kl(log_prob_at_target, target_samples, weights=None):
     r"""Forward Kullback--Leibler divergence from the target to the emulator.
 

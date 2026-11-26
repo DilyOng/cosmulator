@@ -12,6 +12,7 @@ from cosmulator.diagnostics import (
     equal_weight_resample,
     forward_kl,
     knn_kl_divergence,
+    ks_logp,
     moment_error,
     self_consistency,
 )
@@ -278,6 +279,49 @@ class TestEqualWeightResample:
         w = np.abs(np.random.default_rng(0).normal(size=4000)) + 1e-3
         out = equal_weight_resample(np.arange(4000)[:, None], w)
         assert out.shape[0] == round(effective_sample_size(w))
+
+
+class TestKSLogP:
+    """KS test on the emulator log-density (the recommended certification)."""
+
+    def test_identical_distributions_pass(self):
+        # q == P: log q at P-samples and at q-samples share a distribution ->
+        # tiny KS statistic and a large (non-significant) p-value.
+        rng = np.random.default_rng(0)
+        z_target = rng.normal(size=20000)
+        z_emu = rng.normal(size=20000)
+        out = ks_logp(z_target, z_emu)
+        assert out["ks"] < 0.05
+        assert out["pvalue"] > 0.01
+
+    def test_shifted_distribution_flagged(self):
+        # A biased emulator: the two log-density distributions separate, so the
+        # KS statistic is large and the p-value is driven to ~0.
+        rng = np.random.default_rng(1)
+        z_target = rng.normal(0.0, 1.0, size=20000)
+        z_emu = rng.normal(1.5, 1.0, size=20000)
+        out = ks_logp(z_target, z_emu)
+        assert out["ks"] > 0.3
+        assert out["pvalue"] < 1e-3
+
+    def test_weights_respected(self):
+        # Weighting the target onto the half that matches the emulator should
+        # lower the KS statistic relative to ignoring the weights.
+        rng = np.random.default_rng(2)
+        z_match = rng.normal(0.0, 1.0, size=10000)
+        z_off = rng.normal(3.0, 1.0, size=10000)
+        z_target = np.concatenate([z_match, z_off])
+        z_emu = rng.normal(0.0, 1.0, size=20000)
+        w = np.concatenate([np.full(10000, 1.0), np.full(10000, 1e-6)])
+        weighted = ks_logp(z_target, z_emu, weights=w)["ks"]
+        unweighted = ks_logp(z_target, z_emu)["ks"]
+        assert weighted < unweighted
+
+    def test_non_jax(self):
+        import sys
+        ks_logp(np.random.default_rng(0).normal(size=100),
+                np.random.default_rng(1).normal(size=100))
+        assert "jax" not in sys.modules
 
 
 def test_diagnostics_do_not_require_jax():
