@@ -235,6 +235,105 @@ def ks_logp(log_prob_at_target, log_prob_at_emulated, weights=None):
     }
 
 
+def _weighted_ks_vs_uniform(u, weights):
+    """Weighted one-sample KS of PIT values ``u`` in [0, 1] against Uniform(0, 1).
+
+    For the step ECDF versus the continuous identity CDF :math:`F(x)=x`, the
+    supremum of :math:`|S_N - F|` is attained at a jump, on one side or the
+    other, so both the value at each jump (``cum``) and just before it (``prev``)
+    are checked. ``weights`` must already be normalised to sum to one.
+    """
+    o = np.argsort(u)
+    us = u[o]
+    ws = weights[o]
+    cum = np.cumsum(ws)
+    prev = cum - ws
+    return float(max(np.max(np.abs(cum - us)), np.max(np.abs(prev - us))))
+
+
+def ks_one_sample_floor(weights, reps=400, seed=0, quantile=95.0):
+    r"""Distribution-free null floor for a weighted one-sample KS statistic.
+
+    Under :math:`H_0` any continuous statistic maps to Uniform(0, 1) by the
+    probability-integral transform, so the null of a weighted one-sample KS test
+    depends only on the weight template and the sample size, not on the reference
+    distribution. This simulates it by drawing uniforms against the given
+    weights and taking the ``quantile``-th percentile (95 by default).
+    """
+    w = _normalised_weights(weights, np.asarray(weights).size)
+    rng = np.random.default_rng(seed)
+    n = w.size
+    draws = [_weighted_ks_vs_uniform(rng.random(n), w) for _ in range(reps)]
+    return float(np.percentile(draws, quantile))
+
+
+def ks_chi2_base(radius_sq, dof, weights=None, floor=None):
+    r"""Analytic one-sample KS test of a base-space squared radius against chi^2.
+
+    A normalising flow :math:`q` defines :math:`\theta = T^{-1}(u)` with a
+    standard-normal base :math:`u \sim \mathcal N(0, I_d)`, so if
+    :math:`\theta \sim q` then the squared base radius
+    :math:`r^2 = \lVert T(\theta)\rVert^2 \sim \chi^2_d` *exactly*. Pushing a
+    posterior chain through :math:`T` and testing :math:`r^2` against the
+    analytic :math:`\chi^2_d` CDF is therefore a genuine one-sample
+    Kolmogorov--Smirnov test with a closed-form reference. Unlike :func:`ks_logp`,
+    whose reference density ordering is estimated from a finite set of emulator
+    draws (and so is algebraically a two-sample test against them), this test
+    needs no Monte-Carlo reference at all.
+
+    The signed mean :math:`\langle r^2\rangle` relative to :math:`d` is an
+    interpretable over-concentration measure: :math:`\langle r^2\rangle > d`
+    means the posterior is more spread than the flow represents, i.e. the flow is
+    too narrow. It is the analytic analogue of the :func:`self_consistency`
+    ``dlogp``.
+
+    Parameters
+    ----------
+    radius_sq : array_like
+        Squared base-space radii of posterior samples pushed through the flow's
+        forward map :math:`T`.
+    dof : int
+        The base-space dimension :math:`d` (degrees of freedom of the chi^2).
+    weights : array_like, optional
+        Weights for the samples (nested-sampling output is weighted).
+    floor : float, optional
+        A precomputed distribution-free floor (see :func:`ks_one_sample_floor`);
+        computed here if omitted. Pass it in when testing several flows against
+        the same weighted chain, to avoid recomputing an identical floor.
+
+    Returns
+    -------
+    dict
+        ``ks`` -- the one-sample KS statistic against :math:`\chi^2_d`
+        (``0`` = perfect); ``floor`` -- the p95 null floor; ``ks_over_floor`` --
+        their ratio, the effect size to certify on; ``mean_r2`` -- the weighted
+        mean squared radius over finite points; ``r2_excess`` -- ``mean_r2 - dof``
+        (``> 0`` = over-concentrated); ``dof``.
+    """
+    from scipy.stats import chi2
+
+    r2 = np.asarray(radius_sq, dtype=float)
+    w = _normalised_weights(weights, r2.size)
+    # A non-finite radius is a point mapped infinitely far into the base tail;
+    # count it conservatively at the extreme high-radius end (chi2 CDF -> 1).
+    u = chi2.cdf(np.where(np.isfinite(r2), r2, np.inf), df=dof)
+    ks = _weighted_ks_vs_uniform(u, w)
+    if floor is None:
+        floor = ks_one_sample_floor(w)
+    fin = np.isfinite(r2)
+    mean_r2 = (
+        float(np.sum(w[fin] * r2[fin]) / w[fin].sum()) if fin.any() else float("nan")
+    )
+    return {
+        "ks": ks,
+        "floor": float(floor),
+        "ks_over_floor": (ks / floor if floor > 0 else float("inf")),
+        "mean_r2": mean_r2,
+        "r2_excess": mean_r2 - dof,
+        "dof": int(dof),
+    }
+
+
 def forward_kl(log_prob_at_target, target_samples, weights=None):
     r"""Forward Kullback--Leibler divergence from the target to the emulator.
 

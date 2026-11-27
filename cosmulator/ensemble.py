@@ -114,6 +114,35 @@ def _build_flow_template(key, d, arch):
     )
 
 
+def _member_base_u(member, theta):
+    """Push physical ``theta`` to a member's standard-normal base space.
+
+    Each member is an invertible flow with a standard-normal base, so
+    ``u = T(theta) = bijection.inverse(standardise(theta))`` is distributed as
+    :math:`\\mathcal N(0, I_d)` when ``theta`` is drawn from that member. This is
+    the forward map used by the analytic base-radius goodness-of-fit test.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    try:
+        from flowjax.wrappers import unwrap
+    except Exception:  # pragma: no cover - older flowjax without wrappers
+
+        def unwrap(x):
+            return x
+
+    z = member._to_z(jnp.asarray(np.asarray(theta, dtype=np.float64)))
+    bij = unwrap(member.flow.bijection)
+    u = jax.vmap(bij.inverse)(z)
+    base = member.flow.base_dist
+    try:  # standardise by the base loc/scale if it is not already standard
+        u = (u - base.loc) / base.scale
+    except Exception:  # pragma: no cover - base already standard normal
+        pass
+    return np.asarray(u, dtype=np.float64)
+
+
 class _Member:
     """One trained flow plus the affine map from physical theta to flow space.
 
@@ -496,6 +525,64 @@ class EnsembleEmulator:
         emu = self.sample(n_emu, seed=seed + 1)
         z_emu = self.log_prob(emu)
         return _ks_logp(z_target, z_emu, weights=weights)
+
+    def base_radius_gof(self, samples, weights=None):
+        r"""Analytic one-sample goodness-of-fit via the base-space radius, per member.
+
+        Each member :math:`q_k` is an invertible flow with a standard-normal
+        base, so if :math:`\theta \sim q_k` then :math:`r^2 = \lVert
+        T_k(\theta)\rVert^2 \sim \chi^2_d` *exactly*. Pushing the posterior chain
+        through each member's forward map and testing the squared radius against
+        the analytic :math:`\chi^2_d` CDF
+        (:func:`cosmulator.diagnostics.ks_chi2_base`) is a genuine one-sample KS
+        test: the reference is closed-form, so no Monte-Carlo reference draws are
+        involved (unlike :meth:`ks_logp`, whose density ordering is estimated from
+        emulator draws). The signed weighted mean :math:`\langle r^2\rangle`
+        relative to :math:`d` reads directly as over-concentration
+        (:math:`\langle r^2\rangle > d` = the member is too narrow).
+
+        The mixture itself has no single forward map, so the test is per member;
+        the spread of the member statistics is itself informative (a wide spread
+        means the seeds land in very different optima). The null floor is
+        distribution-free, hence identical across members and computed once.
+
+        Returns
+        -------
+        dict
+            ``ks_per_member`` and ``mean_r2_per_member`` (length ``K`` arrays),
+            ``ks_median``/``ks_max``, ``mean_r2_median``, the shared ``floor``,
+            ``ks_over_floor_median``, ``dof`` and ``n_members``.
+        """
+        from cosmulator.diagnostics import ks_chi2_base, ks_one_sample_floor
+
+        theta = np.asarray(samples[self.parameters].to_numpy(), dtype=np.float64)
+        if weights is None:
+            weights = np.asarray(samples.get_weights(), dtype=np.float64)
+        weights = np.asarray(weights, dtype=np.float64)
+        d = len(self.parameters)
+        floor = ks_one_sample_floor(weights)  # distribution-free: compute once
+        ks, mean_r2 = [], []
+        for m in self.members:
+            u = _member_base_u(m, theta)
+            r2 = np.sum(u * u, axis=1)
+            res = ks_chi2_base(r2, d, weights=weights, floor=floor)
+            ks.append(res["ks"])
+            mean_r2.append(res["mean_r2"])
+        ks = np.asarray(ks)
+        mean_r2 = np.asarray(mean_r2)
+        return {
+            "ks_per_member": ks,
+            "mean_r2_per_member": mean_r2,
+            "ks_median": float(np.median(ks)),
+            "ks_max": float(ks.max()),
+            "mean_r2_median": float(np.median(mean_r2)),
+            "floor": float(floor),
+            "ks_over_floor_median": (
+                float(np.median(ks) / floor) if floor > 0 else float("inf")
+            ),
+            "dof": d,
+            "n_members": len(self.members),
+        }
 
     # ------------------------------------------------------------- persistence
     def save(self, directory):

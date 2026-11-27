@@ -12,7 +12,9 @@ from cosmulator.diagnostics import (
     equal_weight_resample,
     forward_kl,
     knn_kl_divergence,
+    ks_chi2_base,
     ks_logp,
+    ks_one_sample_floor,
     moment_error,
     self_consistency,
 )
@@ -335,6 +337,49 @@ class TestKSLogP:
         ks_logp(np.random.default_rng(0).normal(size=100),
                 np.random.default_rng(1).normal(size=100))
         assert "jax" not in sys.modules
+
+
+class TestKSChi2Base:
+    """Analytic one-sample KS of the base-space radius against chi^2."""
+
+    def test_calibrated_near_floor(self):
+        # q == P: base radii are genuine chi^2_d draws, so r^2 ~ chi2_d, the KS
+        # statistic sits at the null floor and the mean r^2 matches d.
+        rng = np.random.default_rng(0)
+        d = 6
+        r2 = rng.chisquare(d, size=20000)
+        out = ks_chi2_base(r2, d)
+        assert out["ks"] < 3 * out["floor"]
+        assert out["mean_r2"] == pytest.approx(d, abs=0.3)
+        assert abs(out["r2_excess"]) < 0.3
+
+    def test_over_concentration_flagged(self):
+        # An over-concentrated flow maps true-posterior points to a LARGER base
+        # radius: r^2 is inflated, so D is many floors and r2_excess > 0.
+        rng = np.random.default_rng(1)
+        d = 6
+        r2 = 1.8 * rng.chisquare(d, size=20000)  # too-narrow flow: radii inflated
+        out = ks_chi2_base(r2, d)
+        assert out["ks_over_floor"] > 5
+        assert out["r2_excess"] > 1.5
+
+    def test_floor_is_distribution_free(self):
+        # The one-sample floor depends only on the weights, not the statistic, so
+        # passing the same weights (precomputed) reproduces it.
+        rng = np.random.default_rng(2)
+        w = rng.random(5000)
+        floor = ks_one_sample_floor(w)
+        out = ks_chi2_base(rng.chisquare(6, size=5000), 6, weights=w, floor=floor)
+        assert out["floor"] == floor
+
+    def test_weights_and_nonfinite(self):
+        # Non-finite radii count conservatively at the high-radius end (chi2 -> 1)
+        # and are excluded from the finite mean; negative weights are rejected.
+        r2 = np.concatenate([np.full(10, np.inf), np.random.default_rng(3).chisquare(6, 90)])
+        out = ks_chi2_base(r2, 6)
+        assert np.isfinite(out["mean_r2"])
+        with pytest.raises(ValueError, match="non-negative"):
+            ks_chi2_base(np.ones(4), 6, weights=np.array([-1.0, 1, 1, 1]))
 
 
 def test_diagnostics_do_not_require_jax():
