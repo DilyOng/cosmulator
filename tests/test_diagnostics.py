@@ -317,6 +317,19 @@ class TestKSLogP:
         unweighted = ks_logp(z_target, z_emu)["ks"]
         assert weighted < unweighted
 
+    def test_negative_weights_rejected(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            ks_logp(np.zeros(5), np.zeros(5), weights=np.array([-1.0, 1, 1, 1, 1]))
+
+    def test_noninite_target_counts_not_dropped(self):
+        # truth mass at log q = -inf (emulator underflow) is a real mismatch and
+        # must count toward D, not be dropped; with half the mass at -inf, D ~ 0.5.
+        rng = np.random.default_rng(3)
+        zt = np.concatenate([np.full(5000, -np.inf), rng.normal(0, 1, 5000)])
+        out = ks_logp(zt, rng.normal(0, 1, 20000))
+        assert out["nonfinite_target_frac"] == pytest.approx(0.5, abs=0.02)
+        assert out["ks"] >= 0.45
+
     def test_non_jax(self):
         import sys
         ks_logp(np.random.default_rng(0).normal(size=100),

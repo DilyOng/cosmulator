@@ -40,6 +40,8 @@ def _normalised_weights(weights, size):
     weights = np.asarray(weights, dtype=float)
     if weights.shape != (size,):
         raise ValueError(f"weights have shape {weights.shape}, expected ({size},)")
+    if np.any(weights < 0):
+        raise ValueError("weights must be non-negative")
     total = weights.sum()
     if not np.isfinite(total) or total <= 0:
         raise ValueError("weights must be finite and sum to a positive value")
@@ -168,13 +170,21 @@ def ks_logp(log_prob_at_target, log_prob_at_emulated, weights=None):
     at_emu = np.asarray(log_prob_at_emulated, dtype=float)
     wt = _normalised_weights(weights, at_target.size)
 
-    ft = np.isfinite(at_target)
+    # Keep non-finite TARGET log-densities instead of dropping them: a truth point
+    # where the emulator density underflows (log q -> -inf) is real posterior mass
+    # in the emulator's near-zero-density region -- a genuine mismatch that must
+    # count toward D, not be discarded (dropping it flatters the emulator). NaN
+    # (undefined density) is mapped to -inf (zero density), the lowest rank; -inf
+    # is order-able, so the weighted ECDF and KS below are well defined.
+    zt = np.where(np.isnan(at_target), -np.inf, at_target)
+    nonfinite_target_frac = float(wt[~np.isfinite(zt)].sum())
+    # Emulator draws come from q, so their log q is finite; drop any pathological
+    # non-finite emulator value (a numerical glitch, not a truth-mass signal).
     fe = np.isfinite(at_emu)
-    if not ft.any() or not fe.any():
-        raise ValueError("no finite log densities on one of the sample sets")
-    zt, wt = at_target[ft], wt[ft]
-    wt = wt / wt.sum()
+    if not fe.any():
+        raise ValueError("no finite emulator log densities")
     ze = at_emu[fe]
+    nonfinite_emu_frac = float(1.0 - fe.mean())
     we = np.full(ze.size, 1.0 / ze.size)
 
     # weighted two-sample KS on the 1D log-density projection: build weighted
@@ -203,7 +213,12 @@ def ks_logp(log_prob_at_target, log_prob_at_emulated, weights=None):
     except Exception:
         pvalue = None
 
-    e_target = float(np.sum(wt * zt))
+    # expectations for the signed dlogp use the FINITE target points only, so a
+    # handful of -inf (zero-density) truth points do not drive the mean to -inf;
+    # their effect is already captured by the KS statistic above.
+    finite_t = np.isfinite(zt)
+    wtf = wt[finite_t]
+    e_target = float(np.sum(wtf * zt[finite_t]) / wtf.sum()) if wtf.sum() > 0 else float("nan")
     e_emu = float(np.mean(ze))
     return {
         "ks": ks,
@@ -212,6 +227,8 @@ def ks_logp(log_prob_at_target, log_prob_at_emulated, weights=None):
         "pvalue": pvalue,
         "n_eff": float(n_eff),
         "max_weight": float(wt.max()),
+        "nonfinite_target_frac": nonfinite_target_frac,
+        "nonfinite_emu_frac": nonfinite_emu_frac,
         "E_q_logq": e_emu,
         "E_P_logq": e_target,
         "dlogp": e_emu - e_target,
